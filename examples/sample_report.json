@@ -1,0 +1,26 @@
+{
+  "total": 1,
+  "passed": 0,
+  "failed": 1,
+  "reports": [
+    {
+      "path": "/data/videos/sample.mp4",
+      "passed": false,
+      "metadata": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 30.0,
+        "duration_sec": 12.5,
+        "codec": "h264"
+      },
+      "results": [
+        {
+          "name": "decode",
+          "severity": "fail",
+          "message": "视频解码失败或存在损坏帧",
+          "details": {}
+        }
+      ]
+    }
+  ]
+}

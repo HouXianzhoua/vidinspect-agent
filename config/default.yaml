@@ -1,0 +1,17 @@
+thresholds:
+  min_width: 640
+  min_height: 480
+  min_fps: 15
+  max_fps: 120
+  min_duration_sec: 0.5
+  max_black_frame_ratio: 0.3
+  max_static_frame_ratio: 0.5
+
+checks:
+  metadata: true
+  integrity: true
+  visual: true
+
+output:
+  fail_on_error: true
+  include_passed: false
