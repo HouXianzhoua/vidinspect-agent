@@ -11,6 +11,57 @@ checks:
   metadata: true
   integrity: true
   visual: true
+  static: true
+  dup_frame: true
+  jump: true
+
+# 静态 / 无效操作检测（移植自 video_quality_pipeline static_arm）
+static:
+  severity: warn        # 命中时的严重级别：warn / fail
+  backend: lite         # lite=纯 CPU 帧差；raft=GPU 稠密光流（更准，需 RAFT 源码+权重）
+  thr: 0.30             # lite：motion_score 低于此值判为静止
+  n_frames: 32          # lite：采样帧数
+  max_h: 240            # 下采样高度（两种后端共用）
+  # ---- raft 后端参数（backend: raft 时生效）----
+  raft_thr: 0.10        # raft：active_ratio 低于此值判为静止（已标定）
+  raft_n_frames: 40     # raft：采样帧数
+  raft_iters: 12        # RAFT 迭代步数
+  raft_batch_size: 40   # 光流批大小（OOM 自动减半）
+  # device: cuda        # 不填则自动：有 GPU 用 cuda，否则 cpu
+  # raft_repo: /path/to/RAFT         # RAFT 源码目录（含 core/raft.py）
+  # raft_model_path: /path/to/raft-sintel.pth   # 权重，缺省取 <raft_repo>/models/raft-sintel.pth
+
+# 重复帧 / 卡顿检测（移植自 video_quality_pipeline stutter_detect）
+dup_frame:
+  severity: warn
+  diff_thr: 0.5
+  strict_thr: 0.05
+  keep_ratio_thr: 0.20
+  mean_gap_thr: 6.0
+  ratio_strict_thr: 0.095
+  keep_ratio_lo: 0.15
+  mid_gap_ratio_thr: 0.45
+  static_keep_ratio_thr: 0.09
+  fps_ref: 20.0         # 阈值标定基准帧率
+  strict_fps_pow: 1.5
+  mean_gap_cap: 16.0
+  downscale: [64, 48]
+  timeout: 60.0
+
+# 跳帧 / 瞬移检测（移植自 video_quality_pipeline jump_frame）
+jump:
+  severity: warn
+  peak_abs_min: 3.0
+  frozen_mean: 0.05
+  sustained_run: 4
+  edge_frames: 1
+  edge_bg_max: 0.6
+  isolation_mode: auto  # auto / all / agibot / off
+  isolation_min: 2.5
+  high_run_max: 1
+  static_bg_max: 0.6
+  thresholds:
+    __default__: 4.0    # 无机器人标签时使用
 
 output:
   fail_on_error: true

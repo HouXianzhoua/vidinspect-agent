@@ -3,7 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from vidinspect_agent.checkers import IntegrityChecker, MetadataChecker, VisualChecker
+from vidinspect_agent.checkers import (
+    DupFrameChecker,
+    IntegrityChecker,
+    JumpChecker,
+    MetadataChecker,
+    StaticChecker,
+    VisualChecker,
+)
 from vidinspect_agent.checkers.base import BaseChecker
 from vidinspect_agent.checkers.metadata import probe_video
 from vidinspect_agent.models import CheckResult, Severity, VideoReport
@@ -18,6 +25,12 @@ def _build_checkers(config: dict[str, Any]) -> list[BaseChecker]:
         checkers.append(MetadataChecker(config))
     if checks.get("visual", True):
         checkers.append(VisualChecker(config))
+    if checks.get("static", True):
+        checkers.append(StaticChecker(config))
+    if checks.get("dup_frame", True):
+        checkers.append(DupFrameChecker(config))
+    if checks.get("jump", True):
+        checkers.append(JumpChecker(config))
     return checkers
 
 
