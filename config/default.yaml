@@ -50,7 +50,7 @@ dup_frame:
 
 # 跳帧 / 瞬移检测（移植自 video_quality_pipeline jump_frame）
 jump:
-  severity: fail
+  severity: warn
   peak_abs_min: 3.0
   frozen_mean: 0.05
   sustained_run: 4
