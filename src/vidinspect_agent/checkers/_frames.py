@@ -6,9 +6,70 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from typing import Optional
 
 import numpy as np
+
+
+def stream_gray_diffs(
+    video_path: str,
+    downscale: tuple[int, int] = (64, 48),
+    timeout: float = 60.0,
+):
+    """顺序解码整段视频为下采样灰度 raw 流，返回相邻帧 mean|ΔY| 序列。
+
+    与 dup_frame 一致用 ffmpeg 把每帧缩成 ``downscale`` 灰度（默认 64×48），
+    按原始播放顺序逐帧计算 ``mean(|Y_i - Y_{i-1}|)``（0–255 量纲）。适用于需要
+    *连续帧序*（而非均匀采样）的检测器：开头/结尾静止时长、长时间卡帧。
+
+    返回 ``(diffs, n_frames, err)``：
+
+    - 成功：``diffs`` 为长度 ``n_frames-1`` 的 ``float64`` ndarray，``err=None``。
+    - 失败 / 超时 / 帧数不足：``diffs=None``，``err`` 为简短错误标识。
+
+    不抛异常，便于上层优雅降级为 WARN。
+    """
+    w, h = downscale
+    chunk = w * h
+    t0 = time.time()
+    try:
+        proc = subprocess.Popen(
+            ["ffmpeg", "-loglevel", "error", "-i", video_path,
+             "-vf", f"scale={w}:{h},format=gray", "-f", "rawvideo", "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10 ** 7,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return None, 0, f"{type(exc).__name__}: {exc}"
+
+    prev = None
+    n = 0
+    diffs: list[float] = []
+    try:
+        while True:
+            if time.time() - t0 > timeout:
+                proc.kill()
+                proc.wait()
+                return None, n, f"timeout>{timeout}s"
+            buf = proc.stdout.read(chunk)
+            if len(buf) < chunk:
+                break
+            g = np.frombuffer(buf, dtype=np.uint8).reshape(h, w).astype(np.int16)
+            if prev is not None:
+                diffs.append(float(np.mean(np.abs(g - prev))))
+            prev = g
+            n += 1
+        proc.wait(timeout=5)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return None, n, f"{type(exc).__name__}: {exc}"
+
+    if n < 2:
+        return None, n, f"too_few_frames={n}"
+    return np.asarray(diffs, dtype=np.float64), n, None
 
 
 def probe_fps(video_path: str, timeout: float = 15.0) -> Optional[float]:

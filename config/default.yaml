@@ -14,6 +14,9 @@ checks:
   static: true
   dup_frame: true
   jump: true
+  endpoint_static: true   # 规范3：开始/结束归位停留时间长
+  freeze: true            # 规范5：画面卡死（长时间卡帧）
+  noise: true             # 规范11：严重噪点
 
 # 静态 / 无效操作检测（移植自 video_quality_pipeline static_arm）
 static:
@@ -62,6 +65,34 @@ jump:
   static_bg_max: 0.6
   thresholds:
     __default__: 4.0    # 无机器人标签时使用
+
+# 开始/结束归位停留时间过长检测（质检规范序号 3）
+endpoint_static:
+  severity: warn        # 命中时的严重级别：warn / fail
+  max_static_sec: 2.0   # 开头或结尾静止时长超过此秒数即命中
+  # 自适应静止阈值 motion_thr_eff = max(abs_floor, p10 + rel_frac*(p90-p10))
+  abs_floor: 0.3        # 静止阈值绝对下限（相邻帧 mean|ΔY|, 0-255）
+  rel_frac: 0.35        # 相对该视频运动区间(p10~p90)的比例
+  downscale: [64, 48]   # ffmpeg 下采样尺寸
+  timeout: 60.0
+
+# 画面卡死 / 长时间卡帧检测（质检规范序号 5）
+freeze:
+  severity: warn
+  freeze_thr: 0.1       # 相邻帧 mean|ΔY|(0-255) 低于此判为冻结（近似同一帧）
+  max_freeze_sec: 2.0   # 单段最长连续冻结超过此秒数即命中
+  downscale: [64, 48]
+  timeout: 60.0
+
+# 注：质检规范序号 6（画面掉帧 / 多段短时卡帧 / 慢放）已由 dup_frame 覆盖
+#（规则 A periodic_stutter + 规则 B 时间变慢），无需单独检测器。
+
+# 严重噪点检测（质检规范序号 11，Immerkær 噪声方差估计）
+noise:
+  severity: warn
+  max_noise_sigma: 8.0  # 噪声标准差(0-255)中位数超过此值即命中
+  n_frames: 16          # 采样帧数
+  max_h: 720            # 采样帧最大高度（过度下采样会削弱噪点，保留较高分辨率）
 
 output:
   fail_on_error: true

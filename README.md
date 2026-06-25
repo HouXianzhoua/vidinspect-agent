@@ -10,8 +10,12 @@
 - **时序质检（移植自 video_quality_pipeline 三件套）**：
   - `static`：机械臂静止 / 无效操作检测。`lite` 后端（默认，纯 CPU，相邻帧 L1 帧差 →
     motion_score）；`raft` 后端（GPU 稠密光流 active_ratio，更准，需 RAFT 源码 + 权重）
-  - `dup_frame`：复制帧伪装高帧率导致的卡顿检测（带 fps 归一化阈值）
+  - `dup_frame`：复制帧伪装高帧率导致的卡顿检测（带 fps 归一化阈值，覆盖规范「画面掉帧/慢放」）
   - `jump`：跳帧 / 瞬移检测（局部归一化帧差 + 绝对幅度/孤立尖峰守卫）
+- **质检规范专项检测器**：
+  - `endpoint_static`：开始/结束归位停留时间过长（首尾静止 > 2s，自适应阈值）
+  - `freeze`：画面卡死 / 长时间卡帧（单段最长冻结时长 > 2s）
+  - `noise`：严重噪点（Immerkær 噪声方差估计）
 - **Agent 编排**：可插拔 Checker 流水线，支持自定义规则与阈值
 - **报告输出**：JSON / 终端表格，便于接入 CI 或数据平台
 
@@ -64,6 +68,11 @@ vidinspect-agent/
 
 `static` 默认 `backend: lite`（纯 CPU）；改为 `backend: raft` 可启用 GPU 稠密光流后端
 （更准，`raft_thr` 默认 0.10），需提供 RAFT 源码与权重路径，否则自动降级为 `warn`。
+
+## 检测器原理
+
+各检测器的算法原理、关键公式、阈值与判定逻辑详见
+[`docs/detectors.md`](docs/detectors.md)。
 
 ## 开发
 

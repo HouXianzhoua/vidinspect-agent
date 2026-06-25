@@ -5,9 +5,12 @@ from typing import Any
 
 from vidinspect_agent.checkers import (
     DupFrameChecker,
+    EndpointStaticChecker,
+    FreezeChecker,
     IntegrityChecker,
     JumpChecker,
     MetadataChecker,
+    NoiseChecker,
     StaticChecker,
     VisualChecker,
 )
@@ -31,6 +34,12 @@ def _build_checkers(config: dict[str, Any]) -> list[BaseChecker]:
         checkers.append(DupFrameChecker(config))
     if checks.get("jump", True):
         checkers.append(JumpChecker(config))
+    if checks.get("endpoint_static", True):
+        checkers.append(EndpointStaticChecker(config))
+    if checks.get("freeze", True):
+        checkers.append(FreezeChecker(config))
+    if checks.get("noise", True):
+        checkers.append(NoiseChecker(config))
     return checkers
 
 
