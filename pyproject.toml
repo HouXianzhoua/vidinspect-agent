@@ -33,6 +33,11 @@ gemini = [
 openai = [
     "openai>=1.40",
 ]
+# LeRobot 摄入层逐帧 parquet 读取（docs/detector_dataset_impact.md §1 / §2）。
+# load_episode_frames（关节 / 夹爪逐帧数组）及 static joint 后端等需要；组级元信息读取无需此依赖。
+lerobot = [
+    "pyarrow>=14.0",
+]
 
 [project.scripts]
 vidinspect = "vidinspect_agent.cli:main"

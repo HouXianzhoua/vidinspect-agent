@@ -15,6 +15,13 @@
 因此本检测器在 regrasp 的逐帧 schema 上**额外要求模型回 ``gripper_closed``**，判定仍
 留在代码侧（逐臂去抖 + 持有段末尾的夹爪状态判别），确定可复现。缺 API key / SDK /
 抽帧失败 / 接口异常 → 一律降级 WARN，不阻塞流水线。
+
+**夹爪信号来源（规范21 §2.3 改造）**：``gripper_closed`` 是本检测器的关键判据，而它本就
+以真实信号存在于 LeRobot 组的 parquet 里（``puppet.end_effector_*_position_align``）。
+故当视频位于 LeRobot v3.0 组内、能由 ``_lerobot.find_episode_parquet`` 自定位到同 episode
+parquet 且装有 ``pyarrow`` 时，**优先用 parquet 夹爪开合真实信号**构造逐帧 ``gripper_closed``
+（模型只继续负责「是否持有」），判定更可靠。任何条件不满足（非 LeRobot 布局 / 缺 parquet /
+缺 pyarrow / 缺视频 fps）→ 逐臂自动回退到模型推断的 ``gripper_closed``，行为与改造前一致。
 """
 from __future__ import annotations
 
@@ -22,6 +29,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from vidinspect_agent.checkers import _lerobot
 from vidinspect_agent.checkers._frames import sample_frames_jpeg
 from vidinspect_agent.checkers._vision import build_backend
 from vidinspect_agent.checkers.base import BaseChecker
@@ -137,6 +145,12 @@ class ObjectSlipChecker(BaseChecker):
                     _normalize(g.get("object_label")) or _SENTINEL
                 )
 
+        # 优先用 parquet 夹爪开合真实信号（§2.3）；不可用则保持空 dict，逐臂回退模型信号。
+        frame_times = [t for t, _ in frames]
+        parquet_closed, parquet_path = self._parquet_closed_seqs(
+            path, metadata, frame_times, cfg
+        )
+
         # 去抖阈值（秒 → 帧）；下限 2 帧，过滤单帧误检 / 单帧遮挡闪断。
         min_hold_frames = max(2, round(float(cfg.get("min_hold_sec", 0.5)) * eff_fps))
         min_release_frames = max(2, round(float(cfg.get("min_release_sec", 1.0)) * eff_fps))
@@ -146,9 +160,11 @@ class ObjectSlipChecker(BaseChecker):
 
         arm_slips: dict[str, int] = {}
         slip_sec: dict[str, list[float]] = {}
+        gripper_source: dict[str, str] = {}
         offenders: list[tuple[str, int]] = []
         for side, hold_seq in hold_seqs.items():
-            closed_seq = closed_seqs.get(side, [None] * n)
+            closed_seq, source = _pick_closed(side, parquet_closed, closed_seqs, n)
+            gripper_source[side] = source
             analysis = detect_slip(
                 hold_seq, closed_seq,
                 min_hold_frames=min_hold_frames,
@@ -168,6 +184,8 @@ class ObjectSlipChecker(BaseChecker):
             "arm_slip_counts": arm_slips,
             "offending_arms": {s: c for s, c in offenders},
             "slip_at_sec": {s: slip_sec[s] for s, _c in offenders},
+            "gripper_source": gripper_source,
+            "parquet": parquet_path,
             "sample_fps": round(eff_fps, 3),
             "min_hold_sec": round(min_hold_frames / eff_fps, 2),
             "min_release_sec": round(min_release_frames / eff_fps, 2),
@@ -185,6 +203,63 @@ class ObjectSlipChecker(BaseChecker):
 
     def _warn(self, msg: str, details: dict[str, Any]) -> CheckResult:
         return CheckResult(name=self.name, severity=Severity.WARN, message=msg, details=details)
+
+    def _parquet_closed_seqs(
+        self,
+        path: Path,
+        metadata: dict[str, Any],
+        frame_times: list[float],
+        cfg: dict[str, Any],
+    ) -> tuple[dict[str, list[bool | None]], str | None]:
+        """构造各侧「逐采样帧是否闭合」序列（来源 parquet 夹爪开合真实信号）。
+
+        夹爪开合经 ``_lerobot.find_episode_parquet`` 自定位同 episode parquet 后由
+        ``read_gripper_opening`` 读取。返回 ``({side: closed_seq_aligned}, parquet_path)``；
+        任一前置条件不满足（配置关闭 / 非 LeRobot 组 / 缺 pyarrow / 缺视频 fps / 列缺失）
+        → 返回 ``({}, None)``，上层据此逐臂回退模型推断信号。
+        """
+        if not cfg.get("use_parquet_gripper", True):
+            return {}, None
+        video_fps = metadata.get("fps")
+        if not video_fps or video_fps <= 0:
+            return {}, None
+        parquet_path = _lerobot.find_episode_parquet(path)
+        if parquet_path is None:
+            return {}, None
+        openings = _lerobot.read_gripper_opening(parquet_path)
+        if not openings:
+            return {}, None
+
+        closed_is_low = bool(cfg.get("gripper_closed_is_low", True))
+        closed_frac = float(cfg.get("gripper_closed_frac", 0.5))
+        min_span = float(cfg.get("gripper_min_span", 1e-6))
+        seqs: dict[str, list[bool | None]] = {}
+        for side, values in openings.items():
+            per_frame = _lerobot.opening_to_closed(
+                values, closed_is_low=closed_is_low,
+                closed_frac=closed_frac, min_span=min_span,
+            )
+            seqs[side] = _lerobot.map_to_sampled(per_frame, frame_times, float(video_fps))
+        return seqs, str(parquet_path)
+
+
+def _pick_closed(
+    side: str,
+    parquet_closed: dict[str, list[bool | None]],
+    model_closed: dict[str, list[bool | None]],
+    n: int,
+) -> tuple[list[bool | None], str]:
+    """为某只臂挑选「是否闭合」序列：优先 parquet 真实信号，否则回退模型推断。
+
+    side 配对策略：精确 side 命中直接用；模型判为单臂(``single``)而 parquet 恰好只有一侧
+    → 用该侧；其余无法稳妥配对的情形回退模型信号（保守，避免左右错配）。
+    """
+    if parquet_closed:
+        if side in parquet_closed:
+            return parquet_closed[side], "parquet"
+        if side == "single" and len(parquet_closed) == 1:
+            return next(iter(parquet_closed.values())), "parquet"
+    return model_closed.get(side, [None] * n), "model"
 
 
 # ------------------------------ 纯逻辑（可单测） ------------------------------

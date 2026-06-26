@@ -5,6 +5,7 @@ from typing import Iterable
 
 import yaml
 
+from vidinspect_agent.lerobot import GroupResolver
 from vidinspect_agent.models import InspectionSummary
 from vidinspect_agent.pipeline import inspect_video
 
@@ -46,9 +47,15 @@ class VidInspectAgent:
         for path in paths:
             videos.extend(discover_videos(Path(path), recursive=recursive))
 
+        # LeRobot 摄入层：把组级信息（robot/task/目标物体/声明规格/标定/parquet 指针）按组
+        # 缓存后注入每个视频的 metadata；非 LeRobot 组或关闭时退化为纯视频检测。
+        lerobot_enabled = self.config.get("lerobot", {}).get("enabled", True)
+        resolver = GroupResolver(enabled=lerobot_enabled)
+
         summary = InspectionSummary(total=len(videos))
         for video in videos:
-            report = inspect_video(video, self.config)
+            extra_metadata = resolver.metadata_for(video)
+            report = inspect_video(video, self.config, extra_metadata=extra_metadata)
             summary.reports.append(report)
             if report.passed:
                 summary.passed += 1

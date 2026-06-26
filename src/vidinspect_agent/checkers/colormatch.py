@@ -45,7 +45,7 @@ _PROMPT_COLORMATCH = (
     "- 用简短稳定的英文名称填 object_label（如 'white_bowl'）；判断不确定时降低 confidence(0~1)。\n"
     "- 某帧看不到明显的被操作物体（已被夹爪完全遮挡 / 已出画 / 无法识别）→ 该帧可省略不返回。\n"
     "只对能识别出被操作物体的帧返回结果，index 与 'Frame i' 的 i 一致。\n"
-    "{robot_hint}"
+    "{robot_hint}{task_hint}"
 )
 
 
@@ -53,6 +53,33 @@ def _robot_hint(robot: Any) -> str:
     if isinstance(robot, str) and robot:
         return f"参考：本视频机器人型号为 {robot}，据此理解夹爪外形与被操作物体。\n"
     return ""
+
+
+def _task_hint(metadata: dict[str, Any]) -> str:
+    """从 metadata 里抽取「被操作物体 / 任务描述」提示，帮模型定位被操作物。
+
+    前向兼容钩子：当 LeRobot 摄入层把 ``target_objects``（来自 labels.json 子任务名）
+    或 ``task``（来自 tasks.jsonl / info.json.metadata.language_instruction）填入 metadata
+    时自动生效；缺省（当前 pipeline）则返回空串，不影响纯视频检测。
+    """
+    parts: list[str] = []
+
+    objects = metadata.get("target_objects")
+    names = ""
+    if isinstance(objects, (list, tuple, set)):
+        names = "、".join(str(o).strip() for o in objects if str(o).strip())
+    elif isinstance(objects, str):
+        names = objects.strip()
+    if names:
+        parts.append(f"本视频被操作的目标物体包括：{names}。请据此定位被操作物体。")
+
+    task = metadata.get("task")
+    if isinstance(task, str) and task.strip():
+        parts.append(f"任务描述：{task.strip()}。可据此推断被操作物体。")
+
+    if not parts:
+        return ""
+    return "参考信息：" + " ".join(parts) + "\n"
 
 
 class ColorMatchChecker(BaseChecker):
@@ -103,7 +130,10 @@ class ColorMatchChecker(BaseChecker):
         if frames is None:
             return [self._warn(f"抽帧失败，跳过操作物同色检测: {err}", {"error": err})]
 
-        prompt = _PROMPT_COLORMATCH.format(robot_hint=_robot_hint(metadata.get("robot")))
+        prompt = _PROMPT_COLORMATCH.format(
+            robot_hint=_robot_hint(metadata.get("robot")),
+            task_hint=_task_hint(metadata),
+        )
         try:
             verdicts = backend.classify_colormatch_frames(frames, prompt)
         except Exception as exc:  # noqa: BLE001 - 调用异常一律降级

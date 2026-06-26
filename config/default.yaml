@@ -7,6 +7,14 @@ thresholds:
   max_black_frame_ratio: 0.3
   max_static_frame_ratio: 0.5
 
+# LeRobot v3.0 数据集摄入 / 编排层（docs/detector_dataset_impact.md §1）
+# 自动识别含 meta/info.json 的数据组，逐组读取真实参数并把组级信息
+#（robot / task / 目标物体 / 声明视频规格 / 标定齐全性 / 对应 parquet 指针）注入每个视频的
+# metadata。jump 的 robot 阈值、colormatch 的 task/target_objects 钩子据此自动生效。
+# 非 LeRobot 组（普通 mp4）自动退化为纯视频检测；逐帧 parquet 数组按需读取（需 pyarrow）。
+lerobot:
+  enabled: true
+
 checks:
   metadata: true
   integrity: true
@@ -26,10 +34,15 @@ checks:
 # 静态 / 无效操作检测（移植自 video_quality_pipeline static_arm）
 static:
   severity: warn        # 命中时的严重级别：warn / fail
-  backend: lite         # lite=纯 CPU 帧差；raft=GPU 稠密光流（更准，需 RAFT 源码+权重）
+  backend: lite         # lite=纯 CPU 帧差；raft=GPU 稠密光流（更准，需 RAFT 源码+权重）；
+                        # joint=LeRobot parquet 关节地面真值（绕开像素帧差的小目标漏判，见 §2.1）
   thr: 0.30             # lite：motion_score 低于此值判为静止
   n_frames: 32          # lite：采样帧数
   max_h: 240            # 下采样高度（两种后端共用）
+  # ---- joint 后端参数（backend: joint 时生效，读同 episode 的 puppet 关节信号）----
+  joint_range_thr: 0.05    # rad：整段所有臂关节稳健峰峰值(q99-q01)均 < 此值判为静止
+  joint_move_speed: 0.005  # rad/帧：判定单帧"在动"的关节速度阈值（仅用于报告 moving_ratio）
+  joint_fallback: lite     # parquet 缺失/不可读时回退后端：lite / raft / none
   # ---- raft 后端参数（backend: raft 时生效）----
   raft_thr: 0.10        # raft：active_ratio 低于此值判为静止（已标定）
   raft_n_frames: 40     # raft：采样帧数
@@ -132,23 +145,31 @@ gripper_offscreen:
     model: gpt-4o             # 任意支持视觉的 OpenAI 多模态模型
     api_key_env: OPENAI_API_KEY
 
-# 二次抓取检测（质检规范序号 1，多模态）
-# 思路：本地抽帧 → 模型逐帧、逐夹爪回 {side, holding, object_label, confidence} → 代码侧
-#   按机械臂(left/right/single)分别去抖后统计该臂的独立"持有段"数，某臂 ≥2 段(被真释放
-#   隔开)即判二次抓取。每只机械臂单目标，故双臂各抓一次(含 A→B 交接)正常、不误报。判定确定可复现。
-# 注意：调用付费多模态 API，需安装对应后端依赖并设置 API key，同时把 checks.regrasp 设为 true。
-#   gemini: pip install -e ".[gemini]" + 环境变量 GEMINI_API_KEY
-#   openai: pip install -e ".[openai]" + 环境变量 OPENAI_API_KEY
-# 缺 key / SDK / 接口异常 / 抽帧失败时降级为 WARN，不阻塞流水线。
+# 二次抓取检测（质检规范序号 1）
+# §2.2 改造：优先用 LeRobot parquet 夹爪开合真实信号逐臂判定（不调模型 / 无需 API key /
+#   零付费调用 / 全分辨率）——逐臂单目标，「夹爪闭合段数」即「抓取次数」，某臂 ≥2 段即命中。
+#   视频在 LeRobot v3.0 组内、能自定位到同 episode parquet 且装有 pyarrow 时生效。
+# 回退：非 LeRobot 布局 / 缺 parquet / 缺 pyarrow / 缺视频 fps / 开合不可判 → 走多模态逐帧路径：
+#   本地抽帧 → 模型逐帧、逐夹爪回 {side, holding, object_label, confidence} → 代码侧按机械臂
+#   (left/right/single)分别去抖后统计独立"持有段"数。该路径需付费 API（缺 key/SDK/异常降级 WARN）。
+# 启用：把 checks.regrasp 设为 true。parquet 路径: pip install -e ".[lerobot]"；
+#   模型回退路径: pip install -e ".[gemini]" + GEMINI_API_KEY（或 ".[openai]" + OPENAI_API_KEY）。
 regrasp:
   severity: warn
-  provider: gemini          # gemini / openai（仅 image 逐帧模式）
+  provider: gemini          # gemini / openai（仅 image 逐帧模式；模型回退路径用）
   sample_fps: 2.0           # 抽帧采样率（建议 >=2，决定抓取/释放的时间分辨率）
   frame_max_h: 360          # 抽帧下采样高度（省 token）
   max_frames: 120           # 单视频抽帧上限（长视频自动降采样以覆盖全片）
   min_hold_sec: 0.5         # 一段"持有"至少持续这么久才算一次有效抓取（去抖，过滤误检；下限 2 帧）
   min_release_sec: 1.0      # 两次持有之间的"释放"至少持续这么久才算真释放（桥接遮挡闪断；下限 2 帧）
-  min_confidence: 0.0       # 低于此置信度的"持有"判定按未持有处理（0=不启用）
+  min_confidence: 0.0       # 低于此置信度的"持有"判定按未持有处理（0=不启用；模型回退路径用）
+  # ---- parquet 夹爪真实信号（§2.2）：优先用 LeRobot parquet 逐臂夹爪开合判定 ----
+  # 视频在 LeRobot v3.0 组内、能定位到同 episode parquet 且装有 pyarrow 时优先生效（不调模型）；
+  # 否则回退到模型逐帧推断路径（行为同改造前）。装 pyarrow: pip install -e ".[lerobot]"
+  use_parquet_gripper: true     # 关闭则始终走模型逐帧推断路径
+  gripper_closed_is_low: true   # 夹爪开合值越小=越闭合（多数 LeRobot/RoboMIND 约定；按组实测可改）
+  gripper_closed_frac: 0.5      # 归一化开合值 ≤ 此比例判为闭合（closed_is_low 时）
+  gripper_min_span: 1.0e-6      # 整段开合区间小于此（夹爪几乎不动）则视为不可判，回退模型
   temperature: 0.0
   timeout: 120.0
   gemini:
@@ -177,6 +198,13 @@ object_slip:
   min_release_sec: 1.0      # 持有之间的"释放"至少这么久才算真脱手（桥接遮挡闪断；下限 2 帧）
   release_window_sec: 0.5   # 持有结束后检查夹爪状态的窗口时长（下限 1 帧）
   min_confidence: 0.0       # 低于此置信度的"持有"判定按未持有处理（0=不启用）
+  # ---- parquet 夹爪真实信号（§2.3）：判据 gripper_closed 优先取自 LeRobot parquet ----
+  # 视频位于 LeRobot v3.0 组内、能定位到同 episode parquet 且装有 pyarrow 时优先生效；
+  # 否则逐臂自动回退到模型推断的 gripper_closed（行为同改造前）。装 pyarrow: pip install -e ".[lerobot]"
+  use_parquet_gripper: true     # 关闭则始终用模型推断的夹爪状态
+  gripper_closed_is_low: true   # 夹爪开合值越小=越闭合（多数 LeRobot/RoboMIND 约定；按组实测可改）
+  gripper_closed_frac: 0.5      # 归一化开合值 ≤ 此比例判为闭合（closed_is_low 时）
+  gripper_min_span: 1.0e-6      # 整段开合区间小于此（夹爪几乎不动）则视为不可判，回退保守
   temperature: 0.0
   timeout: 120.0
   gemini:

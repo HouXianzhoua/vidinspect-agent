@@ -1,7 +1,10 @@
+import pytest
+
 from vidinspect_agent.agent import discover_videos
+from vidinspect_agent.checkers import _lerobot
 from vidinspect_agent.checkers.brightness import evaluate_brightness
-from vidinspect_agent.checkers.colormatch import evaluate_colormatch
-from vidinspect_agent.checkers.object_slip import detect_slip
+from vidinspect_agent.checkers.colormatch import _task_hint, evaluate_colormatch
+from vidinspect_agent.checkers.object_slip import _pick_closed, detect_slip
 from vidinspect_agent.checkers.regrasp import detect_regrasp
 from vidinspect_agent.models import CheckResult, Severity, VideoReport
 
@@ -121,6 +124,176 @@ def test_slip_window_does_not_cross_next_hold():
     assert out["detected"] is False
 
 
+def test_opening_to_closed_low_is_closed():
+    # 默认约定：开合值越小越闭合。低值帧→闭合(True)，高值帧→张开(False)。
+    closed = _lerobot.opening_to_closed([0.0, 0.0, 1.0, 1.0], closed_is_low=True)
+    assert closed == [True, True, False, False]
+
+
+def test_opening_to_closed_high_is_closed():
+    # 反向约定：值越大越闭合。
+    closed = _lerobot.opening_to_closed([0.0, 0.0, 1.0, 1.0], closed_is_low=False)
+    assert closed == [False, False, True, True]
+
+
+def test_opening_to_closed_constant_is_unknown():
+    # 夹爪整段几乎不动（区间过小）→ 无从区分开合 → 全 None（不可判）。
+    closed = _lerobot.opening_to_closed([0.5, 0.5, 0.5, 0.5])
+    assert closed == [None, None, None, None]
+
+
+def test_opening_to_closed_nan_frame_is_unknown():
+    # 单帧 NaN/None → 该帧 None，其余按区间判定。
+    closed = _lerobot.opening_to_closed([0.0, float("nan"), 1.0], closed_is_low=True)
+    assert closed[0] is True and closed[1] is None and closed[2] is False
+
+
+def test_map_to_sampled_aligns_by_time():
+    # 逐视频帧闭合序列按 round(t*fps) 映射到采样帧时间轴。
+    per_frame = [True, True, False, False, False, False]  # 30fps 下第 0..5 帧
+    times = [0.0, 0.1, 0.2]  # fps=10 采样：对应视频帧 round(t*30)=0,3,6
+    out = _lerobot.map_to_sampled(per_frame, times, video_fps=30.0)
+    assert out == [True, False, None]  # 第三个越界(6>=6)→None
+
+
+def test_map_to_sampled_no_fps_all_unknown():
+    assert _lerobot.map_to_sampled([True, False], [0.0, 1.0], video_fps=0.0) == [None, None]
+
+
+def test_find_episode_parquet_none_outside_lerobot(tmp_path):
+    # 非 LeRobot 布局的普通视频路径 → None，object_slip 据此回退模型信号。
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    assert _lerobot.find_episode_parquet(video) is None
+
+
+def test_find_episode_parquet_locates_sibling(tmp_path):
+    # 标准布局 videos/<chunk>/<cam>/<stem>.mp4 → data/<chunk>/<stem>.parquet。
+    root = tmp_path / "lerobot_RoboMIND"
+    cam = root / "videos" / "chunk-000" / "camera_top"
+    cam.mkdir(parents=True)
+    video = cam / "episode_000129.mp4"
+    video.write_bytes(b"fake")
+    data = root / "data" / "chunk-000"
+    data.mkdir(parents=True)
+    parquet = data / "episode_000129.parquet"
+    parquet.write_bytes(b"fake")
+    assert _lerobot.find_episode_parquet(video) == parquet
+
+
+def test_pick_closed_prefers_parquet_exact_side():
+    parquet = {"left": [True, True], "right": [False, False]}
+    seq, src = _pick_closed("left", parquet, {"left": [None, None]}, 2)
+    assert src == "parquet" and seq == [True, True]
+
+
+def test_pick_closed_single_maps_to_sole_parquet_side():
+    parquet = {"left": [True, False]}
+    seq, src = _pick_closed("single", parquet, {}, 2)
+    assert src == "parquet" and seq == [True, False]
+
+
+def test_pick_closed_falls_back_to_model_when_unmatched():
+    # 模型判为 single，但 parquet 有左右两侧 → 无法稳妥配对 → 回退模型信号。
+    parquet = {"left": [True, True], "right": [False, False]}
+    seq, src = _pick_closed("single", parquet, {"single": [True, None]}, 2)
+    assert src == "model" and seq == [True, None]
+
+
+def test_pick_closed_falls_back_when_no_parquet():
+    seq, src = _pick_closed("left", {}, {"left": [None, True]}, 2)
+    assert src == "model" and seq == [None, True]
+
+
+def test_slip_uses_parquet_closed_signal_end_to_end():
+    # parquet 开合轨迹 → 闭合序列 → detect_slip：持有[0,3)，释放窗口[3,5)仍闭合 → 滑落。
+    hold = ["a", "a", "a", None, None, None]
+    opening = [0.1, 0.1, 0.1, 0.1, 0.1, 0.9]  # 仅末帧张开，释放窗口内仍闭合
+    closed = _lerobot.opening_to_closed(opening, closed_is_low=True)
+    out = detect_slip(hold, closed, min_hold_frames=2, min_release_frames=2,
+                      release_window_frames=2)
+    assert out["detected"] is True
+
+
+def test_slip_parquet_open_after_release_is_normal_place():
+    # 释放后夹爪明确张开（高开合值）→ 正常放下，不报。
+    hold = ["a", "a", "a", None, None, None]
+    opening = [0.1, 0.1, 0.1, 0.9, 0.9, 0.9]
+    closed = _lerobot.opening_to_closed(opening, closed_is_low=True)
+    out = detect_slip(hold, closed, min_hold_frames=2, min_release_frames=2,
+                      release_window_frames=2)
+    assert out["detected"] is False
+
+
+def _write_lerobot_episode(root, opening_by_side, *, episode="episode_000129"):
+    """构造最小 LeRobot 组：videos/.../<ep>.mp4 + data/.../<ep>.parquet（含夹爪开合列）。"""
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+
+    cam = root / "videos" / "chunk-000" / "camera_top"
+    cam.mkdir(parents=True)
+    video = cam / f"{episode}.mp4"
+    video.write_bytes(b"fake")
+    data = root / "data" / "chunk-000"
+    data.mkdir(parents=True)
+    cols = {
+        f"puppet.end_effector_{side}_position_align.data": [[float(v)] for v in vals]
+        for side, vals in opening_by_side.items()
+    }
+    pq.write_table(pa.table(cols), str(data / f"{episode}.parquet"))
+    return video
+
+
+def test_regrasp_parquet_double_grasp_end_to_end():
+    # §2.2：闭(低)→开(高)→闭(低) 的开合轨迹 → 逐臂 single_object 计 2 段 → 命中。
+    opening = [0.0] * 8 + [1.0] * 12 + [0.0] * 8
+    closed = _lerobot.opening_to_closed(opening, closed_is_low=True)
+    seq = ["__hold__" if c else None for c in closed]
+    out = detect_regrasp(seq, single_object=True, min_hold_frames=5, min_release_frames=10)
+    assert out["detected"] is True
+    assert out["counts"]["__hold__"] == 2
+
+
+def test_regrasp_checker_parquet_flags_double_grasp(tmp_path):
+    # §2.2 端到端：RegraspChecker 走 parquet 夹爪真实信号，无需 API key 即判定。
+    from vidinspect_agent.checkers.regrasp import RegraspChecker
+
+    opening = [0.0] * 8 + [1.0] * 12 + [0.0] * 8  # 同一只左臂两次闭合
+    video = _write_lerobot_episode(tmp_path / "lerobot_RoboMIND", {"left": opening})
+    cfg = {"regrasp": {"severity": "warn", "min_hold_sec": 0.5, "min_release_sec": 1.0}}
+    # fps=10 → min_hold=5 帧、min_release=10 帧。
+    results = RegraspChecker(cfg).check(video, {"fps": 10.0})
+    assert len(results) == 1
+    res = results[0]
+    assert res.details["source"] == "parquet"
+    assert res.details["arm_grasp_counts"]["left"] == 2
+    assert res.severity == Severity.WARN
+
+
+def test_regrasp_checker_parquet_single_grasp_passes(tmp_path):
+    from vidinspect_agent.checkers.regrasp import RegraspChecker
+
+    opening = [1.0] * 6 + [0.0] * 12 + [1.0] * 6  # 仅一次抓取 → 不命中
+    video = _write_lerobot_episode(tmp_path / "lerobot_RoboMIND", {"left": opening})
+    cfg = {"regrasp": {"severity": "warn", "min_hold_sec": 0.5, "min_release_sec": 1.0}}
+    res = RegraspChecker(cfg).check(video, {"fps": 10.0})[0]
+    assert res.details["source"] == "parquet"
+    assert res.severity == Severity.PASS
+    assert res.details["arm_grasp_counts"]["left"] == 1
+
+
+def test_regrasp_non_lerobot_falls_back_to_model(tmp_path, monkeypatch):
+    # 非 LeRobot 布局 → parquet 路径返回 None → 回退模型；无 API key → WARN 跳过。
+    from vidinspect_agent.checkers.regrasp import RegraspChecker
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    res = RegraspChecker({"regrasp": {}}).check(video, {"fps": 30.0})[0]
+    assert res.severity == Severity.WARN
+    assert res.details.get("error") == "missing_api_key"
+
+
 def test_brightness_underexposed_detected():
     # 各帧平均亮度都很低（欠曝），中位数 < 阈值 → 命中。
     out = evaluate_brightness([18.0, 22.0, 20.0, 19.0], min_luma=40.0)
@@ -201,6 +374,28 @@ def test_colormatch_no_judged_frames_safe():
     out = _cm([None, None, None])
     assert out["n_judged"] == 0
     assert out["detected"] is False
+
+
+def test_task_hint_empty_when_no_metadata():
+    # 当前 pipeline 不填这些字段 → 空串，不影响纯视频检测。
+    assert _task_hint({}) == ""
+    assert _task_hint({"robot": "tienkung"}) == ""
+
+
+def test_task_hint_from_target_objects_list():
+    hint = _task_hint({"target_objects": ["书籍", "文件夹"]})
+    assert "书籍" in hint and "文件夹" in hint
+    assert hint.endswith("\n")
+
+
+def test_task_hint_from_task_description():
+    hint = _task_hint({"task": "整理书籍上架"})
+    assert "整理书籍上架" in hint
+
+
+def test_task_hint_combines_objects_and_task():
+    hint = _task_hint({"target_objects": "书籍", "task": "整理书籍上架"})
+    assert "书籍" in hint and "整理书籍上架" in hint
 
 
 def test_video_report_to_dict():

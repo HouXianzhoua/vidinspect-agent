@@ -72,6 +72,12 @@
 **种类**：三路彩色视频，相机 key 固定为
 `camera_observations.color_images.camera_left` / `camera_right` / `camera_top`。
 
+**机位安装（重要，勿混淆）**：`camera_left` / `camera_right` 是**装在左 / 右夹爪（腕部）上的随动相机**，
+随对应机械臂一起运动（**不是**固定侧视机位）；`camera_top` 是**俯视固定机位**。这一安装关系是
+"画面一致性"类检测的前提——例如规范 #18（主画面机械臂在动、而夹爪相机画面不动）：腕部相机随臂运动，
+某只臂一旦运动，其对应腕部相机画面就应大幅变化；若该臂关节在动而腕部相机画面冻结，即为画面不一致。
+据此可把字段按 side 配对：`camera_left` ↔ `puppet.arm_left_position_align` ↔ `puppet.end_effector_left_position_align`，右侧同理。
+
 **介绍**：每个 episode 三个机位各一个 mp4；无音频；**无深度图**（虽然 `info.json` 里有
 `camera_depth_resolution.*` 字段，但未交付深度视频）。
 

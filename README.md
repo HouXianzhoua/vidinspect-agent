@@ -70,6 +70,7 @@ vidinspect-agent/
 ├── src/vidinspect_agent/
 │   ├── agent.py             # Agent 编排入口
 │   ├── pipeline.py          # Checker 流水线
+│   ├── lerobot.py           # LeRobot 数据集摄入层（组级信息注入 metadata）
 │   ├── models.py            # 数据模型
 │   └── checkers/            # 各类质检器
 └── tests/
@@ -90,7 +91,10 @@ vidinspect-agent/
 ## 检测器原理
 
 各检测器的算法原理、关键公式、阈值与判定逻辑详见
-[`docs/detectors.md`](docs/detectors.md)。
+[`docs/detectors.md`](docs/detectors.md)。数据集可用信息清单见
+[`docs/dataset_inputs.md`](docs/dataset_inputs.md)；引入这些多模态信息后各检测器的
+改造影响评估（大变更 / 小优化 / 不用变）见
+[`docs/detector_dataset_impact.md`](docs/detector_dataset_impact.md)。
 
 ## 开发
 

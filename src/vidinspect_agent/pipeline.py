@@ -82,12 +82,18 @@ def _extract_metadata(probe: dict[str, Any]) -> dict[str, Any]:
     duration = fmt.get("duration")
     duration_sec = float(duration) if duration is not None else None
 
+    has_audio = any(
+        s.get("codec_type") == "audio" for s in probe.get("streams", [])
+    )
+
     return {
         "width": width,
         "height": height,
         "fps": fps,
         "duration_sec": duration_sec,
         "codec": video_stream.get("codec_name"),
+        "pix_fmt": video_stream.get("pix_fmt"),
+        "has_audio": has_audio,
         "format": fmt.get("format_name"),
         "size_bytes": int(fmt["size"]) if fmt.get("size") else None,
     }
@@ -97,14 +103,20 @@ def _report_failed(results: list[CheckResult]) -> bool:
     return any(r.severity == Severity.FAIL for r in results)
 
 
-def inspect_video(path: Path, config: dict[str, Any]) -> VideoReport:
+def inspect_video(
+    path: Path,
+    config: dict[str, Any],
+    extra_metadata: dict[str, Any] | None = None,
+) -> VideoReport:
     path = path.resolve()
     results: list[CheckResult] = []
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = dict(extra_metadata or {})
 
     try:
         probe = probe_video(path)
-        metadata = _extract_metadata(probe)
+        # ffprobe 实测值优先；组级注入项仅补充其未覆盖的键（robot/task/target_objects/lerobot）。
+        for key, value in _extract_metadata(probe).items():
+            metadata[key] = value
     except Exception as exc:  # noqa: BLE001 - surface probe errors as check results
         results.append(
             CheckResult(

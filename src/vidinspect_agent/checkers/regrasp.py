@@ -15,6 +15,15 @@
 再次抓取即命中；双臂各自抓取一次（甚至 A→B 交接）则正常，不会误报。判定始终
 留在代码侧（逐臂去抖后的持有段计数），确定可复现。缺 API key / SDK 缺失 /
 抽帧失败 / 接口异常 → 一律降级为 WARN，不阻塞流水线。
+
+**夹爪信号来源（规范1 §2.2 改造）**：抓取 / 释放的「时序」本就以真实信号存在于
+LeRobot 组的 parquet 里（``puppet.end_effector_*_position_align``，见
+``docs/dataset_inputs.md §3``）。逐臂判定是单目标、忽略物体身份，故「夹爪闭合段数」
+即「抓取次数」——当视频位于 LeRobot v3.0 组内、能自定位到同 episode parquet 且装有
+``pyarrow`` 时，**优先用 parquet 夹爪开合真实信号逐臂判定**：完全不调多模态模型
+（无需 API key、零付费调用、用全分辨率时间轴），去抖 / 计数落在真实信号上更稳。
+任一前置不满足（配置关闭 / 非 LeRobot 布局 / 缺 parquet / 缺 pyarrow / 缺视频 fps /
+开合区间过小不可判）→ 自动回退到原多模态逐帧推断路径，行为同改造前。
 """
 from __future__ import annotations
 
@@ -22,6 +31,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from vidinspect_agent.checkers import _lerobot
 from vidinspect_agent.checkers._frames import sample_frames_jpeg
 from vidinspect_agent.checkers._vision import build_backend
 from vidinspect_agent.checkers.base import BaseChecker
@@ -77,9 +87,25 @@ class RegraspChecker(BaseChecker):
 
     def check(self, path: Path, metadata: dict[str, Any]) -> list[CheckResult]:
         cfg = self.config.get("regrasp", {})
+        fail_severity = _severity(cfg.get("severity", "warn"))
+
+        # §2.2：优先用 parquet 夹爪开合真实信号逐臂判定（零付费调用 / 无需 API key / 全分辨率）。
+        parquet_results = self._check_via_parquet(path, metadata, cfg, fail_severity)
+        if parquet_results is not None:
+            return parquet_results
+
+        # 回退：多模态逐帧推断（原行为，需 API key + 抽帧）。
+        return self._check_via_model(path, metadata, cfg, fail_severity)
+
+    def _check_via_model(
+        self,
+        path: Path,
+        metadata: dict[str, Any],
+        cfg: dict[str, Any],
+        fail_severity: Severity,
+    ) -> list[CheckResult]:
         provider = str(cfg.get("provider", "gemini")).lower()
         min_conf = float(cfg.get("min_confidence", 0.0))
-        fail_severity = _severity(cfg.get("severity", "warn"))
 
         defaults = _PROVIDER_DEFAULTS.get(provider, {})
         pcfg = cfg.get(provider, {})
@@ -175,6 +201,87 @@ class RegraspChecker(BaseChecker):
                                 message=msg, details=details)]
         return [CheckResult(name=self.name, severity=Severity.PASS,
                             message="未检测到二次抓取", details=details)]
+
+    def _check_via_parquet(
+        self,
+        path: Path,
+        metadata: dict[str, Any],
+        cfg: dict[str, Any],
+        fail_severity: Severity,
+    ) -> list[CheckResult] | None:
+        """§2.2：用 parquet 夹爪开合真实信号逐臂判二次抓取（不调模型 / 不抽帧）。
+
+        逐臂单目标、忽略物体身份，故「夹爪闭合段数」即「抓取次数」，时序完全由真实信号
+        驱动。任一前置不满足（配置关闭 / 非 LeRobot 组 / 缺 parquet / 缺 pyarrow / 缺视频
+        fps / 各侧开合整段不可判）→ 返回 ``None``，由调用方回退到多模态路径。
+        """
+        if not cfg.get("use_parquet_gripper", True):
+            return None
+        video_fps = metadata.get("fps")
+        if not video_fps or video_fps <= 0:
+            return None
+        parquet_path = _lerobot.find_episode_parquet(path)
+        if parquet_path is None:
+            return None
+        openings = _lerobot.read_gripper_opening(parquet_path)
+        if not openings:
+            return None
+
+        closed_is_low = bool(cfg.get("gripper_closed_is_low", True))
+        closed_frac = float(cfg.get("gripper_closed_frac", 0.5))
+        min_span = float(cfg.get("gripper_min_span", 1e-6))
+        # parquet 一行 = 一视频帧，故按视频 fps 把去抖阈值（秒）换算成帧；两者下限 2 帧。
+        fps = float(video_fps)
+        min_hold_frames = max(2, round(float(cfg.get("min_hold_sec", 0.5)) * fps))
+        min_release_frames = max(2, round(float(cfg.get("min_release_sec", 1.0)) * fps))
+
+        arm_counts: dict[str, int] = {}
+        arm_starts_sec: dict[str, list[float]] = {}
+        offenders: list[tuple[str, int]] = []
+        evaluated = 0
+        for side, values in openings.items():
+            closed = _lerobot.opening_to_closed(
+                values, closed_is_low=closed_is_low,
+                closed_frac=closed_frac, min_span=min_span,
+            )
+            if all(c is None for c in closed):
+                continue  # 该侧开合整段不可判（夹爪几乎不动）→ 跳过该侧
+            evaluated += 1
+            # 夹爪闭合 = 持有（逐臂单目标，无需认物体）；未知(None) 按未持有处理。
+            seq = [_SENTINEL if c else None for c in closed]
+            analysis = detect_regrasp(
+                seq, single_object=True,
+                min_hold_frames=min_hold_frames, min_release_frames=min_release_frames,
+            )
+            count = analysis["counts"].get(_SENTINEL, 0)
+            arm_counts[side] = count
+            arm_starts_sec[side] = [round(a / fps, 2)
+                                    for a in analysis["starts"].get(_SENTINEL, [])]
+            if count >= 2:
+                offenders.append((side, count))
+
+        if evaluated == 0:
+            return None  # parquet 在但各侧开合全不可判 → 回退模型路径
+
+        details = {
+            "source": "parquet",
+            "parquet": str(parquet_path),
+            "arm_grasp_counts": arm_counts,
+            "offending_arms": {s: c for s, c in offenders},
+            "grasp_start_sec": {s: arm_starts_sec[s] for s, _c in offenders},
+            "fps": round(fps, 3),
+            "min_hold_sec": round(min_hold_frames / fps, 2),
+            "min_release_sec": round(min_release_frames / fps, 2),
+            "gripper_closed_is_low": closed_is_low,
+            "n_frames": len(next(iter(openings.values()))),
+        }
+        if offenders:
+            parts = [f"{_SIDE_DISPLAY.get(s, s)}抓取 {c} 次" for s, c in offenders]
+            msg = "疑似二次抓取: " + "；".join(parts) + "（每臂应为 1 次）"
+            return [CheckResult(name=self.name, severity=fail_severity,
+                                message=msg, details=details)]
+        return [CheckResult(name=self.name, severity=Severity.PASS,
+                            message="未检测到二次抓取（parquet 夹爪信号）", details=details)]
 
     def _warn(self, msg: str, details: dict[str, Any]) -> CheckResult:
         return CheckResult(name=self.name, severity=Severity.WARN, message=msg, details=details)
