@@ -117,7 +117,7 @@
 | `jump` | 像素局部峰值 + 四重守卫，按 `robot` 查阈值表 | 摄入层填 `metadata["robot"]=robot_type`，阈值表才真正生效（现恒落 `__default__=4.0`，等于没分机型）；可选用关节跳变交叉验证 | ✅ |
 | `dup_frame` | 像素复制帧比例 + fps 归一化 | fps 归一化改用 `info.json` 声明帧率（更权威；全量 29/30/28 因组而异）；时间戳连续性另起新检查 | ✅（fps 部分；时间戳连续性见 §5） |
 | `endpoint_static` | 像素首 / 尾连续静止 + 自适应阈值 | 用关节速度≈0 或 `labels` 的「归位」子任务段交叉验证首尾停留，减少对 64×48 像素自适应阈值的脆弱依赖 | ✅ |
-| `freeze` | 像素单段最长冻结时长 | 与关节运动交叉判别：腕部相机（`camera_left/right`）随臂运动，画面冻结但关节在动 → 真冻结 / 画面不一致（顺带覆盖规范 18） | ✅ |
+| `freeze` | 像素单段最长冻结时长 | 与关节运动交叉判别：腕部相机（`camera_left/right`）随臂运动，画面冻结但关节在动时把「关节仍在动」作为补充信号写入 details/文案（规范 18 判定归属新检测器 `frame_consistency`，见 §5；`freeze` 仍专司规范 5 长冻结） | ✅ |
 | `brightness` | 像素平均亮度中位数 vs 固定阈值 40 | 用 `stats.json` 像素均值作每数据源基线，替代写死阈值（亦可按组标定） | ✅ |
 
 **落地说明**（全部对非 LeRobot 视频 / 缺 parquet / 缺 pyarrow **优雅降级**回原纯像素行为，
@@ -138,7 +138,8 @@
   绕开 64×48 像素自适应阈值的脆弱性；末尾「归位 / 复位」子任务段记入 `details.trailing_homing_subtask`。
   配置 `endpoint_static.joint_cross_validate` / `joint_move_speed`，像素值仍保留在 `details` 对照。
 - `freeze`：腕部相机（`camera_left/right`）画面冻结但对应臂关节在动 → `details.frame_joint_inconsistent=true`
-  并细化命中文案为「画面与关节不一致（规范 18）」；俯视 / 头部固定机位用整体关节运动。
+  并在命中文案中补充「期间对应臂关节仍在运动」；规范 18 的判定归属新检测器 `frame_consistency`（见 §5），
+  `freeze` 本身仍报规范 5（单段长冻结）。俯视 / 头部固定机位用整体关节运动。
   配置 `freeze.joint_cross_validate` / `joint_move_speed`。
 - `brightness`：有 `stats.json` 基线时阈值 = `baseline × baseline_rel_frac`（默认 0.4）替代写死的 40，
   `details.threshold_source ∈ {stats_baseline, fixed}`。配置 `brightness.use_stats_baseline` / `baseline_rel_frac`。
@@ -168,6 +169,7 @@
 
 | 新增检测点 | 用到的新数据 / 覆盖的待定规范 |
 | --- | --- |
+| 画面/关节一致性 ✅ 已实现（`frame_consistency`） | parquet 臂关节（"该臂动没动"地面真值）+ 腕部相机帧差（"画面动没动"）→ 规范 18 画面保持一致；无需 AI，详见 `detectors.md §3bis.5` |
 | 三方帧数一致性 | `episodes.jsonl.length` = parquet 行数 = mp4 `nb_frames`（高价值低成本） |
 | schema / dtype 校验 | parquet 实际 dtype/shape vs `info.json.features`（金标准）；特征齐全 / 多余 |
 | 关节合理性 | 超物理范围 / 相邻帧跳变抖动 / 轨迹不平滑 → 规范 7 joint 异常、规范 2 动作不流畅 |

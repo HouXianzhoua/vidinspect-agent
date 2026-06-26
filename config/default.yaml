@@ -24,6 +24,7 @@ checks:
   jump: true
   endpoint_static: true   # 规范3：开始/结束归位停留时间长
   freeze: true            # 规范5：画面卡死（长时间卡帧）
+  frame_consistency: true # 规范18：画面与关节一致（腕部相机随臂运动；需 LeRobot parquet 关节）
   tail_action: true       # 规范24：标注末动作结束帧之后仍有实际动作帧
   noise: true             # 规范11：严重噪点
   brightness: true        # 规范20子项：画面过暗/欠曝
@@ -122,10 +123,29 @@ freeze:
   max_freeze_sec: 2.0   # 单段最长连续冻结超过此秒数即命中
   downscale: [64, 48]
   timeout: 60.0
-  # §3：腕部相机(camera_left/right)随对应臂运动，画面冻结但该臂关节在动 → 画面/关节不一致
-  #（规范18）。有 LeRobot 关节时据此区分「真冻结」与「画面不一致」，记入 details 并细化命中文案。
+  # §3：腕部相机(camera_left/right)随对应臂运动，画面冻结但该臂关节在动时把"关节仍在动"作为
+  # 补充信号写入 details/文案（规范18 的判定归属 frame_consistency 检测器，本项仍报规范5 长冻结）。
   joint_cross_validate: true
   joint_move_speed: 0.005  # rad/帧：关节速度高于此视为「在动」
+
+# 画面与关节一致性检测（质检规范序号 18：画面保持一致）
+# 腕部相机(camera_left/right)刚性装在左/右夹爪上随对应臂运动：该侧臂关节在动(parquet 地面真值)
+# 而腕部相机画面却几乎不动 → 画面/关节不一致（采集冻结/串流延迟/掉帧/贴错相机）。纯 CPU 帧差 +
+# parquet 关节，无需 AI。判据为相对底噪：以该臂静止帧估相机自身底噪 cam_floor，臂在动时相机帧差
+# ≤ max(cam_floor*floor_k, abs_static_floor) 的连续段 > min_inconsistent_sec 即命中。
+# 适用前提：LeRobot v3.0 组（有 camera_key + parquet 指针）且装 pyarrow（pip install -e ".[lerobot]"）。
+# 非腕部机位(camera_top)/非 LeRobot 视频 → 不适用 PASS 跳过；缺关节/缺 pyarrow/解码失败/无 fps → WARN。
+# 与 freeze 的边界：freeze 负责"与关节无关的单段长冻结(规范5)"；本项是其超集，专司"画面动得
+# 和臂的运动不匹配(规范18)"。「某只臂确实没动」天然不误报（无"臂在动"帧则不评估）。
+frame_consistency:
+  severity: warn
+  joint_move_speed: 0.01      # rad/帧：该侧臂关节速度高于此视为"在动"（略高于 static 的 0.005，滤微动）
+  floor_k: 3.0                # 画面帧差需超过自身底噪的倍数，否则算"画面没动"
+  abs_static_floor: 0.1       # 帧差(0-255)绝对下限（近似"同一帧"，兜底压缩噪声，与 freeze_thr 同量级）
+  min_inconsistent_sec: 1.0   # "臂在动却画面静止"的最长连续段超过此秒数即命中
+  min_still_frames: 5         # 估相机底噪所需的最少"臂静止"帧数，不足则退回 q10
+  downscale: [64, 48]
+  timeout: 60.0
 
 # 末尾多余动作 / 视频帧数量问题检测（质检规范序号 24）
 # 规范：允许总帧数 > 标注末动作结束帧，但不允许该结束帧之后还有实际动作帧。

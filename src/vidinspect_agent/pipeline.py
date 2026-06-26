@@ -9,6 +9,7 @@ from vidinspect_agent.checkers import (
     DupFrameChecker,
     EdgeGraspChecker,
     EndpointStaticChecker,
+    FrameConsistencyChecker,
     FreezeChecker,
     GripperOffscreenChecker,
     IntegrityChecker,
@@ -47,6 +48,9 @@ def _build_checkers(config: dict[str, Any]) -> list[BaseChecker]:
         checkers.append(EndpointStaticChecker(config))
     if checks.get("freeze", True):
         checkers.append(FreezeChecker(config))
+    # 画面与关节一致性（规范18）：腕部相机随臂运动，纯 CPU 帧差 + parquet 关节地面真值。
+    if checks.get("frame_consistency", True):
+        checkers.append(FrameConsistencyChecker(config))
     # 末尾多余动作 / 视频帧数量问题（规范24）：纯 CPU，依赖 LeRobot 标注 + parquet 关节地面真值。
     if checks.get("tail_action", True):
         checkers.append(TailActionChecker(config))
