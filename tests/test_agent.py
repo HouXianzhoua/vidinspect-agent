@@ -4,6 +4,7 @@ from vidinspect_agent.agent import discover_videos
 from vidinspect_agent.checkers import _lerobot
 from vidinspect_agent.checkers.brightness import evaluate_brightness
 from vidinspect_agent.checkers.colormatch import _task_hint, evaluate_colormatch
+from vidinspect_agent.checkers.edge_grasp import evaluate_edge_grasp
 from vidinspect_agent.checkers.object_slip import _pick_closed, detect_slip
 from vidinspect_agent.checkers.occlusion import evaluate_occlusion
 from vidinspect_agent.checkers.regrasp import detect_regrasp
@@ -412,6 +413,35 @@ def test_occlusion_clear_object_not_flagged():
     assert out["score"] > 0.5
 
 
+def _eg(verdicts, thr=0.5, min_conf=0.0):
+    return evaluate_edge_grasp(verdicts, hit_ratio_thr=thr, min_confidence=min_conf)
+
+
+def test_edge_grasp_majority_edge_detected():
+    # 多数可判定帧都"夹在边缘"，占比 ≥ 阈值 → 命中。
+    verdicts = [
+        {"edge": True, "confidence": 0.9},
+        {"edge": True, "confidence": 0.8},
+        {"edge": False, "confidence": 0.9},
+        {"edge": True, "confidence": 0.7},
+    ]
+    out = _eg(verdicts)
+    assert out["detected"] is True
+    assert out["n_edge"] == 3 and out["n_judged"] == 4
+
+
+def test_edge_grasp_body_grasp_not_flagged():
+    # 多数帧夹在主体 → 占比低于阈值 → 不命中。
+    verdicts = [
+        {"edge": False, "confidence": 0.9},
+        {"edge": False, "confidence": 0.9},
+        {"edge": True, "confidence": 0.6},
+    ]
+    out = _eg(verdicts)
+    assert out["detected"] is False
+    assert out["score"] > 0.5
+
+
 def test_occlusion_unreturned_frames_not_counted():
     # 模型未返回的帧(None)不计入分母，只在可判定帧里算占比。
     verdicts = [None, {"occluded": True, "confidence": 0.9}]
@@ -436,6 +466,45 @@ def test_occlusion_no_judged_frames_safe():
     out = _occ([None, None])
     assert out["n_judged"] == 0
     assert out["detected"] is False
+
+
+def test_edge_grasp_unreturned_frames_not_counted():
+    # 模型未返回的帧(None，未夹住物体/看不清接触点)不计入分母，只在能判定帧里算占比。
+    verdicts = [None, None, {"edge": True, "confidence": 0.9}, {"edge": True, "confidence": 0.9}]
+    out = _eg(verdicts)
+    assert out["n_judged"] == 2 and out["hit_ratio"] == 1.0
+    assert out["detected"] is True
+
+
+def test_edge_grasp_low_confidence_frames_skipped():
+    # 启用 min_confidence 后，低置信度帧被跳过，不计入。
+    verdicts = [
+        {"edge": True, "confidence": 0.2},
+        {"edge": False, "confidence": 0.9},
+        {"edge": False, "confidence": 0.9},
+    ]
+    out = _eg(verdicts, min_conf=0.5)
+    assert out["n_judged"] == 2 and out["n_edge"] == 0
+    assert out["detected"] is False
+
+
+def test_edge_grasp_no_judged_frames_safe():
+    # 全部帧未见夹爪夹住物体 → 无有效判定，不命中（上层据 n_judged 报 WARN）。
+    out = _eg([None, None, None])
+    assert out["n_judged"] == 0
+    assert out["detected"] is False
+
+
+def test_edge_grasp_checker_missing_api_key(tmp_path, monkeypatch):
+    # 无 API key → WARN 跳过，不阻塞流水线。
+    from vidinspect_agent.checkers.edge_grasp import EdgeGraspChecker
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    res = EdgeGraspChecker({"edge_grasp": {}}).check(video, {"fps": 30.0})[0]
+    assert res.severity == Severity.WARN
+    assert res.details.get("error") == "missing_api_key"
 
 
 def test_task_hint_empty_when_no_metadata():

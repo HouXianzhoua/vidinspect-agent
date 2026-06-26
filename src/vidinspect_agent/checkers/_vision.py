@@ -70,6 +70,16 @@ class VisionBackend(ABC):
         """
         raise NotImplementedError(f"{self.name} 不支持 classify_occlusion_frames")
 
+    def classify_edge_grasp_frames(
+        self, frames: list[Frame], prompt: str
+    ) -> dict[int, dict[str, Any]]:
+        """逐帧判定「夹爪是否夹在物体边缘而非主体」：
+
+        返回 ``{frame_index: {edge, object_label, confidence}}``。供 edge_grasp
+        （夹取位置过于极限，规范16）检测器复用。默认不支持，由子类实现。
+        """
+        raise NotImplementedError(f"{self.name} 不支持 classify_edge_grasp_frames")
+
     def detect_video_intervals(self, video_path: str, prompt: str) -> list[Interval]:
         """video 模式：返回夹爪出镜区间。默认不支持。"""
         raise VideoModeUnsupported(f"{self.name} 不支持 video 模式")
@@ -229,6 +239,30 @@ def _occlusion_frame_schema() -> dict[str, Any]:
     }
 
 
+def _edge_grasp_frame_schema() -> dict[str, Any]:
+    """逐帧「夹爪是否夹在物体边缘而非主体」判定 schema（规范16）。"""
+    return {
+        "type": "object",
+        "properties": {
+            "frames": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "edge_grasp": {"type": "boolean"},
+                        "object_label": {"type": "string"},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["index", "edge_grasp"],
+                },
+            },
+            "notes": {"type": "string"},
+        },
+        "required": ["frames"],
+    }
+
+
 def _parse_occlusion(data: dict[str, Any]) -> dict[int, dict[str, Any]]:
     """返回 {frame_index: {occluded, object_label, confidence}}。
 
@@ -242,6 +276,25 @@ def _parse_occlusion(data: dict[str, Any]) -> dict[int, dict[str, Any]]:
             continue
         out[idx] = {
             "occluded": bool(fv.get("gripper_occludes_object", False)),
+            "object_label": str(fv.get("object_label", "") or "").strip(),
+            "confidence": float(fv.get("confidence", 1.0) or 1.0),
+        }
+    return out
+
+
+def _parse_edge_grasp(data: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """返回 {frame_index: {edge, object_label, confidence}}。
+
+    仅收录模型显式返回的帧；未返回的帧由上层按「该帧未见夹爪夹住物体」跳过。
+    """
+    out: dict[int, dict[str, Any]] = {}
+    for fv in data.get("frames", []):
+        try:
+            idx = int(fv["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out[idx] = {
+            "edge": bool(fv.get("edge_grasp", False)),
             "object_label": str(fv.get("object_label", "") or "").strip(),
             "confidence": float(fv.get("confidence", 1.0) or 1.0),
         }
@@ -325,6 +378,12 @@ class GeminiBackend(VisionBackend):
     ) -> dict[int, dict[str, Any]]:
         data = self._gen_json(self._frame_contents(frames, prompt), _occlusion_frame_schema())
         return _parse_occlusion(data)
+
+    def classify_edge_grasp_frames(
+        self, frames: list[Frame], prompt: str
+    ) -> dict[int, dict[str, Any]]:
+        data = self._gen_json(self._frame_contents(frames, prompt), _edge_grasp_frame_schema())
+        return _parse_edge_grasp(data)
 
     def detect_video_intervals(self, video_path: str, prompt: str) -> list[Interval]:
         timeout = float(self.cfg.get("timeout", 120.0))
@@ -413,6 +472,14 @@ class OpenAIBackend(VisionBackend):
             self._frame_content(frames, prompt), _occlusion_frame_schema(), "occlusion_frames"
         )
         return _parse_occlusion(data)
+
+    def classify_edge_grasp_frames(
+        self, frames: list[Frame], prompt: str
+    ) -> dict[int, dict[str, Any]]:
+        data = self._gen_json(
+            self._frame_content(frames, prompt), _edge_grasp_frame_schema(), "edge_grasp_frames"
+        )
+        return _parse_edge_grasp(data)
 
     # OpenAI 走 image 模式；video 模式沿用基类抛 VideoModeUnsupported。
 

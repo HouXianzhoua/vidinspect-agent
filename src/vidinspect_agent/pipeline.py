@@ -7,6 +7,7 @@ from vidinspect_agent.checkers import (
     BrightnessChecker,
     ColorMatchChecker,
     DupFrameChecker,
+    EdgeGraspChecker,
     EndpointStaticChecker,
     FreezeChecker,
     GripperOffscreenChecker,
@@ -68,6 +69,9 @@ def _build_checkers(config: dict[str, Any]) -> list[BaseChecker]:
     # 首帧夹爪遮挡操作物品（规范15）同样走付费多模态远程调用，默认关闭。
     if checks.get("occlusion", False):
         checkers.append(OcclusionChecker(config))
+    # 夹取位置过于极限（规范16）同样走付费多模态远程调用，默认关闭。
+    if checks.get("edge_grasp", False):
+        checkers.append(EdgeGraspChecker(config))
     return checkers
 
 
