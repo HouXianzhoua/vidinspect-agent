@@ -30,6 +30,7 @@ checks:
   regrasp: false            # 规范1：二次抓取（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
   object_slip: false        # 规范21：物体滑落（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
   colormatch: false         # 规范19：操作物与桌面同色（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
+  tablecloth: false         # 规范17：误夹桌布（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
 
 # 元数据检查（分辨率 / 帧率 / 时长 + 声明 vs 实测交叉核对）
 metadata:
@@ -256,6 +257,35 @@ colormatch:
   max_frames: 16            # 单视频抽帧上限（静态属性，少量均匀帧覆盖全片即可）
   hit_ratio: 0.5            # 能识别物体的帧里"难分辨"占比 ≥ 此值即命中
   min_judged_frames: 2      # 有效判定帧数下限，低于此报 WARN(无法评估)避免单帧误判
+  min_confidence: 0.0       # 低于此置信度的帧判定跳过(不计入)（0=不启用）
+  temperature: 0.0
+  timeout: 120.0
+  gemini:
+    model: gemini-2.5-flash
+    api_key_env: GEMINI_API_KEY
+  openai:
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+
+# 误夹桌布检测（质检规范序号 17，多模态）
+# 规范：含桌布 / 台布场景下，夹爪夹取物品时不应连带桌布一起被夹起致其变形。
+# 与 colormatch 同属「逐帧独立判 + 占比聚合」（无需时序状态机），但多一道前置门控：
+#   本地抽帧 → 模型逐帧回 {has_tablecloth, tablecloth_caught, object_label, confidence}
+#   → 代码侧先看「含桌布」帧是否足够（不足 → 本项不适用，PASS）；再在含桌布帧里
+#   「误夹」帧占比 ≥ hit_ratio 且命中帧数 ≥ min_hit_frames 即命中。因判定带主观性，命中默认 WARN。
+# 注意：调用付费多模态 API，需安装对应后端依赖并设置 API key，同时把 checks.tablecloth 设为 true。
+#   gemini: pip install -e ".[gemini]" + 环境变量 GEMINI_API_KEY
+#   openai: pip install -e ".[openai]" + 环境变量 OPENAI_API_KEY
+# 缺 key / SDK / 接口异常 / 抽帧失败时降级为 WARN，不阻塞流水线。
+tablecloth:
+  severity: warn            # 命中时的严重级别：warn / fail
+  provider: gemini          # gemini / openai（仅 image 逐帧模式）
+  sample_fps: 2.0           # 抽帧采样率（误夹多在夹取/抬起的短窗口内，建议 >=2 以免漏掉）
+  frame_max_h: 360          # 抽帧下采样高度（省 token）
+  max_frames: 60            # 单视频抽帧上限（长视频自动降采样以覆盖全片）
+  hit_ratio: 0.3            # 含桌布帧里"误夹"占比 ≥ 此值即命中（误夹只在抬起段，阈值低于 colormatch）
+  min_cloth_frames: 2       # 含桌布帧数下限，低于此判 PASS（本项不适用，无桌布场景）
+  min_hit_frames: 2         # 命中所需最少"误夹"帧数，压制单帧误判
   min_confidence: 0.0       # 低于此置信度的帧判定跳过(不计入)（0=不启用）
   temperature: 0.0
   timeout: 120.0

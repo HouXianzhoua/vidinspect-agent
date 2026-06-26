@@ -17,6 +17,7 @@ from vidinspect_agent.checkers import (
     ObjectSlipChecker,
     RegraspChecker,
     StaticChecker,
+    TableclothChecker,
     VisualChecker,
 )
 from vidinspect_agent.checkers.base import BaseChecker
@@ -60,6 +61,9 @@ def _build_checkers(config: dict[str, Any]) -> list[BaseChecker]:
     # 操作物与桌面同色（规范19）同样走付费多模态远程调用，默认关闭。
     if checks.get("colormatch", False):
         checkers.append(ColorMatchChecker(config))
+    # 误夹桌布（规范17）同样走付费多模态远程调用，默认关闭。
+    if checks.get("tablecloth", False):
+        checkers.append(TableclothChecker(config))
     return checkers
 
 

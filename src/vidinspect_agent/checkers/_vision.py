@@ -60,6 +60,16 @@ class VisionBackend(ABC):
         """
         raise NotImplementedError(f"{self.name} 不支持 classify_colormatch_frames")
 
+    def classify_tablecloth_frames(
+        self, frames: list[Frame], prompt: str
+    ) -> dict[int, dict[str, Any]]:
+        """逐帧判定「含桌布场景下夹爪是否连带桌布被夹起 / 牵拉变形」：
+
+        返回 ``{frame_index: {has_cloth, caught, object_label, confidence}}``。供
+        tablecloth（误夹桌布，规范17）检测器复用。默认不支持，由子类实现。
+        """
+        raise NotImplementedError(f"{self.name} 不支持 classify_tablecloth_frames")
+
     def detect_video_intervals(self, video_path: str, prompt: str) -> list[Interval]:
         """video 模式：返回夹爪出镜区间。默认不支持。"""
         raise VideoModeUnsupported(f"{self.name} 不支持 video 模式")
@@ -195,6 +205,55 @@ def _parse_colormatch(data: dict[str, Any]) -> dict[int, dict[str, Any]]:
     return out
 
 
+def _tablecloth_frame_schema() -> dict[str, Any]:
+    """逐帧「含桌布场景 + 夹爪是否误夹桌布致其变形」判定 schema（规范17）。
+
+    ``has_tablecloth`` 标记该帧画面里是否存在桌布 / 台布（本项前置条件，无桌布场景不适用）；
+    ``tablecloth_caught`` 仅在含桌布且夹爪正连带桌布夹起 / 明显牵拉变形时为 true。
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "frames": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "has_tablecloth": {"type": "boolean"},
+                        "tablecloth_caught": {"type": "boolean"},
+                        "object_label": {"type": "string"},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["index", "has_tablecloth"],
+                },
+            },
+            "notes": {"type": "string"},
+        },
+        "required": ["frames"],
+    }
+
+
+def _parse_tablecloth(data: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """返回 {frame_index: {has_cloth, caught, object_label, confidence}}。
+
+    仅收录模型显式返回的帧；未返回的帧由上层按「无可判定信息」跳过（不计入）。
+    """
+    out: dict[int, dict[str, Any]] = {}
+    for fv in data.get("frames", []):
+        try:
+            idx = int(fv["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out[idx] = {
+            "has_cloth": bool(fv.get("has_tablecloth", False)),
+            "caught": bool(fv.get("tablecloth_caught", False)),
+            "object_label": str(fv.get("object_label", "") or "").strip(),
+            "confidence": float(fv.get("confidence", 1.0) or 1.0),
+        }
+    return out
+
+
 def _interval_schema() -> dict[str, Any]:
     return {
         "type": "object",
@@ -266,6 +325,12 @@ class GeminiBackend(VisionBackend):
     ) -> dict[int, dict[str, Any]]:
         data = self._gen_json(self._frame_contents(frames, prompt), _colormatch_frame_schema())
         return _parse_colormatch(data)
+
+    def classify_tablecloth_frames(
+        self, frames: list[Frame], prompt: str
+    ) -> dict[int, dict[str, Any]]:
+        data = self._gen_json(self._frame_contents(frames, prompt), _tablecloth_frame_schema())
+        return _parse_tablecloth(data)
 
     def detect_video_intervals(self, video_path: str, prompt: str) -> list[Interval]:
         timeout = float(self.cfg.get("timeout", 120.0))
@@ -346,6 +411,14 @@ class OpenAIBackend(VisionBackend):
             self._frame_content(frames, prompt), _colormatch_frame_schema(), "colormatch_frames"
         )
         return _parse_colormatch(data)
+
+    def classify_tablecloth_frames(
+        self, frames: list[Frame], prompt: str
+    ) -> dict[int, dict[str, Any]]:
+        data = self._gen_json(
+            self._frame_content(frames, prompt), _tablecloth_frame_schema(), "tablecloth_frames"
+        )
+        return _parse_tablecloth(data)
 
     # OpenAI 走 image 模式；video 模式沿用基类抛 VideoModeUnsupported。
 

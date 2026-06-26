@@ -11,6 +11,7 @@ from vidinspect_agent.checkers.noise import NoiseChecker
 from vidinspect_agent.checkers.object_slip import ObjectSlipChecker
 from vidinspect_agent.checkers.regrasp import RegraspChecker
 from vidinspect_agent.checkers.static import StaticChecker
+from vidinspect_agent.checkers.tablecloth import TableclothChecker
 from vidinspect_agent.checkers.visual import VisualChecker
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "RegraspChecker",
     "ObjectSlipChecker",
     "ColorMatchChecker",
+    "TableclothChecker",
 ]
