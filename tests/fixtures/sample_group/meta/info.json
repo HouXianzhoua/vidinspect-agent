@@ -1,0 +1,314 @@
+{
+  "codebase_version": "v3.0",
+  "robot_type": "tienkung_station_dualArm-gripper-3cameras_9",
+  "total_episodes": 134,
+  "total_frames": 395660,
+  "total_tasks": 1,
+  "chunks_size": 1000,
+  "data_files_size_in_mb": 100,
+  "video_files_size_in_mb": 200,
+  "fps": 30,
+  "splits": {
+    "train": "0:134"
+  },
+  "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+  "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+  "features": {
+    "puppet.arm_left_position_align.data": {
+      "dtype": "float32",
+      "shape": [
+        7
+      ]
+    },
+    "puppet.arm_left_position_align.is_intervene": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "puppet.arm_left_position_align.timestamp": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "puppet.arm_right_position_align.data": {
+      "dtype": "float32",
+      "shape": [
+        7
+      ]
+    },
+    "puppet.arm_right_position_align.is_intervene": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "puppet.arm_right_position_align.timestamp": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "puppet.end_effector_left_position_align.data": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "puppet.end_effector_left_position_align.is_intervene": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "puppet.end_effector_left_position_align.timestamp": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "puppet.end_effector_right_position_align.data": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "puppet.end_effector_right_position_align.is_intervene": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "puppet.end_effector_right_position_align.timestamp": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "master.arm_left_position_align.data": {
+      "dtype": "float64",
+      "shape": [
+        7
+      ]
+    },
+    "master.arm_left_position_align.is_intervene": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "master.arm_left_position_align.timestamp": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "master.arm_right_position_align.data": {
+      "dtype": "float64",
+      "shape": [
+        7
+      ]
+    },
+    "master.arm_right_position_align.is_intervene": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "master.arm_right_position_align.timestamp": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "master.end_effector_left_position_align.data": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "master.end_effector_left_position_align.is_intervene": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "master.end_effector_left_position_align.timestamp": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "master.end_effector_right_position_align.data": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "master.end_effector_right_position_align.is_intervene": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "master.end_effector_right_position_align.timestamp": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "camera_observations.color_images.camera_left": {
+      "dtype": "video",
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channel"
+      ],
+      "info": {
+        "video.height": 480,
+        "video.width": 640,
+        "video.codec": "h264",
+        "video.pix_fmt": "yuv420p",
+        "video.is_depth_map": false,
+        "video.fps": 30,
+        "video.channels": 3,
+        "has_audio": false
+      }
+    },
+    "camera_observations.color_images.camera_right": {
+      "dtype": "video",
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channel"
+      ],
+      "info": {
+        "video.height": 480,
+        "video.width": 640,
+        "video.codec": "h264",
+        "video.pix_fmt": "yuv420p",
+        "video.is_depth_map": false,
+        "video.fps": 30,
+        "video.channels": 3,
+        "has_audio": false
+      }
+    },
+    "camera_observations.color_images.camera_top": {
+      "dtype": "video",
+      "shape": [
+        480,
+        640,
+        3
+      ],
+      "names": [
+        "height",
+        "width",
+        "channel"
+      ],
+      "info": {
+        "video.height": 480,
+        "video.width": 640,
+        "video.codec": "h264",
+        "video.pix_fmt": "yuv420p",
+        "video.is_depth_map": false,
+        "video.fps": 30,
+        "video.channels": 3,
+        "has_audio": false
+      }
+    },
+    "camera_observations.is_intervene": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ]
+    },
+    "camera_observations.timestamp": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "timestamp": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "frame_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "episode_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    },
+    "task_index": {
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "names": null
+    }
+  },
+  "camera_color_channel.camera_left": " bgr",
+  "camera_color_channel.camera_right": "bgr",
+  "camera_color_channel.camera_top": "bgr",
+  "camera_color_resolution.camera_left": [
+    640,
+    480
+  ],
+  "camera_color_resolution.camera_right": [
+    640,
+    480
+  ],
+  "camera_color_resolution.camera_top": [
+    640,
+    480
+  ],
+  "camera_depth_resolution.camera_left": [
+    640,
+    480
+  ],
+  "camera_depth_resolution.camera_right": [
+    640,
+    480
+  ],
+  "camera_depth_resolution.camera_top": [
+    640,
+    480
+  ],
+  "camera_model.camera_left": "Orbbec_Gemini336L",
+  "camera_model.camera_right": "Orbbec_Gemini336L",
+  "camera_model.camera_top": "Orbbec_Gemini336L",
+  "metadata.collection_time": "2026-03-26 18:49:36",
+  "metadata.collector": "384a90588d87b7ac681581fddeeb07cb",
+  "metadata.data_format_version": "v1.0.0",
+  "metadata.data_type": "hdf5",
+  "metadata.language_instruction": "3-4 books of different sizes are scattered on the table, with a storage box on the right side",
+  "metadata.trajectory_length": 2920
+}

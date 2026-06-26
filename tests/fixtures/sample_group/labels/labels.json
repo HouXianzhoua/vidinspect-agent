@@ -1,0 +1,409 @@
+{
+  "labels": [
+    {
+      "episode_index": 129,
+      "key_frame": [],
+      "subtasks": [
+        {
+          "start_frame": 0,
+          "end_frame": 284,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 285,
+          "end_frame": 367,
+          "label": "移动右臂将书籍叠放"
+        },
+        {
+          "start_frame": 605,
+          "end_frame": 740,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 741,
+          "end_frame": 809,
+          "label": "移动右臂将书籍叠放"
+        },
+        {
+          "start_frame": 810,
+          "end_frame": 987,
+          "label": "双臂协作对齐书的边缘"
+        },
+        {
+          "start_frame": 988,
+          "end_frame": 1138,
+          "label": "移动右臂按压书籍"
+        },
+        {
+          "start_frame": 1219,
+          "end_frame": 1391,
+          "label": "双臂协作抓取书籍"
+        },
+        {
+          "start_frame": 1392,
+          "end_frame": 1635,
+          "label": "移动右臂 将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 1636,
+          "end_frame": 1832,
+          "label": "双臂协作抓取书籍"
+        },
+        {
+          "start_frame": 1833,
+          "end_frame": 2070,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 2071,
+          "end_frame": 2187,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 2188,
+          "end_frame": 2443,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 2414,
+          "end_frame": 2535,
+          "label": "移动左臂抓取文件夹"
+        },
+        {
+          "start_frame": 2536,
+          "end_frame": 2900,
+          "label": "移动右臂将文件夹放置到书架对应孔位"
+        },
+        {
+          "start_frame": 2901,
+          "end_frame": 2940,
+          "label": "机械臂归位"
+        }
+      ]
+    },
+    {
+      "episode_index": 130,
+      "key_frame": [],
+      "subtasks": [
+        {
+          "start_frame": 0,
+          "end_frame": 298,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 299,
+          "end_frame": 357,
+          "label": "移动右臂将书籍叠放"
+        },
+        {
+          "start_frame": 554,
+          "end_frame": 674,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 675,
+          "end_frame": 755,
+          "label": "移动右臂将书籍叠放"
+        },
+        {
+          "start_frame": 756,
+          "end_frame": 955,
+          "label": "双臂协作对齐书的边缘"
+        },
+        {
+          "start_frame": 956,
+          "end_frame": 1120,
+          "label": "移动右臂按压书籍"
+        },
+        {
+          "start_frame": 1232,
+          "end_frame": 1375,
+          "label": "双臂协作抓取书籍"
+        },
+        {
+          "start_frame": 1376,
+          "end_frame": 1557,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 1558,
+          "end_frame": 1724,
+          "label": "双臂协作抓取书籍"
+        },
+        {
+          "start_frame": 1725,
+          "end_frame": 1913,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 1914,
+          "end_frame": 2039,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 2040,
+          "end_frame": 2306,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 2284,
+          "end_frame": 2385,
+          "label": "移动左臂抓取文件夹"
+        },
+        {
+          "start_frame": 2386,
+          "end_frame": 2738,
+          "label": "移动右臂将文件夹放置到书架对应孔位"
+        },
+        {
+          "start_frame": 2739,
+          "end_frame": 2793,
+          "label": "机械臂归位"
+        }
+      ]
+    },
+    {
+      "episode_index": 131,
+      "key_frame": [],
+      "subtasks": [
+        {
+          "start_frame": 0,
+          "end_frame": 275,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 276,
+          "end_frame": 384,
+          "label": "移动右臂将书籍叠放"
+        },
+        {
+          "start_frame": 626,
+          "end_frame": 752,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 753,
+          "end_frame": 839,
+          "label": "移动右臂将书籍叠放"
+        },
+        {
+          "start_frame": 840,
+          "end_frame": 1115,
+          "label": "双臂协作对齐书的边缘"
+        },
+        {
+          "start_frame": 1116,
+          "end_frame": 1254,
+          "label": "移动右臂按压书籍"
+        },
+        {
+          "start_frame": 1330,
+          "end_frame": 1418,
+          "label": "双臂协作抓取书籍"
+        },
+        {
+          "start_frame": 1419,
+          "end_frame": 1614,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 1615,
+          "end_frame": 1801,
+          "label": "双臂协作抓取书籍"
+        },
+        {
+          "start_frame": 1802,
+          "end_frame": 1995,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 1996,
+          "end_frame": 2110,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 2111,
+          "end_frame": 2336,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 2337,
+          "end_frame": 2436,
+          "label": "移动左臂抓取文件夹"
+        },
+        {
+          "start_frame": 2437,
+          "end_frame": 2800,
+          "label": "移动右臂将文件夹放置到书架对应孔位"
+        },
+        {
+          "start_frame": 2801,
+          "end_frame": 2852,
+          "label": "机械臂归位"
+        }
+      ]
+    },
+    {
+      "episode_index": 132,
+      "key_frame": [],
+      "subtasks": [
+        {
+          "start_frame": 0,
+          "end_frame": 302,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 303,
+          "end_frame": 366,
+          "label": "移动右臂将书籍叠放"
+        },
+        {
+          "start_frame": 566,
+          "end_frame": 663,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 664,
+          "end_frame": 742,
+          "label": "移动右臂将书籍叠放"
+        },
+        {
+          "start_frame": 743,
+          "end_frame": 1174,
+          "label": "双臂协作对齐书的边缘"
+        },
+        {
+          "start_frame": 1175,
+          "end_frame": 1317,
+          "label": "移动右臂按压书籍"
+        },
+        {
+          "start_frame": 1432,
+          "end_frame": 1550,
+          "label": "双臂协作抓取书籍"
+        },
+        {
+          "start_frame": 1551,
+          "end_frame": 1770,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 1771,
+          "end_frame": 1902,
+          "label": "双臂协作抓取书籍"
+        },
+        {
+          "start_frame": 1903,
+          "end_frame": 2107,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 2108,
+          "end_frame": 2262,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 2263,
+          "end_frame": 2532,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 2533,
+          "end_frame": 2620,
+          "label": "移动左臂抓取文件夹"
+        },
+        {
+          "start_frame": 2621,
+          "end_frame": 2901,
+          "label": "移动右臂将文件夹放置到书架对应孔位"
+        },
+        {
+          "start_frame": 2902,
+          "end_frame": 2978,
+          "label": "机械臂归位"
+        }
+      ]
+    },
+    {
+      "episode_index": 133,
+      "key_frame": [],
+      "subtasks": [
+        {
+          "start_frame": 0,
+          "end_frame": 296,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 297,
+          "end_frame": 352,
+          "label": "移动右臂将书籍叠放"
+        },
+        {
+          "start_frame": 353,
+          "end_frame": 441,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 442,
+          "end_frame": 504,
+          "label": "移动右臂将书籍叠放"
+        },
+        {
+          "start_frame": 505,
+          "end_frame": 1009,
+          "label": "双臂协作对齐书的边缘"
+        },
+        {
+          "start_frame": 1010,
+          "end_frame": 1126,
+          "label": "移动右臂按压书籍"
+        },
+        {
+          "start_frame": 1127,
+          "end_frame": 1339,
+          "label": "双臂协作抓取书籍"
+        },
+        {
+          "start_frame": 1340,
+          "end_frame": 1517,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 1518,
+          "end_frame": 1668,
+          "label": "双臂协作抓取书籍"
+        },
+        {
+          "start_frame": 1669,
+          "end_frame": 1842,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 1843,
+          "end_frame": 1962,
+          "label": "移动右臂抓取书籍"
+        },
+        {
+          "start_frame": 1963,
+          "end_frame": 2239,
+          "label": "移动右臂将书籍放置到书架对应孔位"
+        },
+        {
+          "start_frame": 2182,
+          "end_frame": 2302,
+          "label": "移动左臂抓取文件夹"
+        },
+        {
+          "start_frame": 2303,
+          "end_frame": 2575,
+          "label": "移动右臂将文件夹放置到书架对应孔位"
+        },
+        {
+          "start_frame": 2576,
+          "end_frame": 2620,
+          "label": "机械臂归位"
+        }
+      ]
+    }
+  ]
+}
