@@ -1,6 +1,7 @@
 from vidinspect_agent.checkers.brightness import BrightnessChecker
 from vidinspect_agent.checkers.colormatch import ColorMatchChecker
 from vidinspect_agent.checkers.dup_frame import DupFrameChecker
+from vidinspect_agent.checkers.edge_grasp import EdgeGraspChecker
 from vidinspect_agent.checkers.endpoint_static import EndpointStaticChecker
 from vidinspect_agent.checkers.freeze import FreezeChecker
 from vidinspect_agent.checkers.gripper_offscreen import GripperOffscreenChecker
@@ -28,4 +29,5 @@ __all__ = [
     "RegraspChecker",
     "ObjectSlipChecker",
     "ColorMatchChecker",
+    "EdgeGraspChecker",
 ]

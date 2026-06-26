@@ -62,8 +62,8 @@ def check(self, path: Path, metadata: dict[str, Any]) -> list[CheckResult]:
 ### 1.4 装配开关
 
 `config["checks"]` 逐项控制是否启用。装配顺序：
-`integrity → metadata → visual → static → dup_frame → jump → endpoint_static → freeze → noise → brightness → gripper_offscreen → regrasp → object_slip → colormatch`。
-除 `gripper_offscreen`（规范12）/ `regrasp`（规范1）/ `object_slip`（规范21）/ `colormatch`（规范19）四项付费多模态远程调用**默认关闭**外，其余默认全开。
+`integrity → metadata → visual → static → dup_frame → jump → endpoint_static → freeze → noise → brightness → gripper_offscreen → regrasp → object_slip → colormatch → edge_grasp`。
+除 `gripper_offscreen`（规范12）/ `regrasp`（规范1）/ `object_slip`（规范21）/ `colormatch`（规范19）/ `edge_grasp`（规范16）五项付费多模态远程调用**默认关闭**外，其余默认全开。
 
 ### 1.5 优雅降级原则
 
@@ -723,6 +723,57 @@ metadata 抽取并注入两类提示，帮模型锁定目标，**有就用、缺
 > **启用方式**：`pip install -e ".[gemini]"`（或 `".[openai]"`）→ 设对应 API key →
 > 把 `config` 的 `checks.colormatch` 改为 `true`（默认 false，因属付费远程调用）。
 
+### 3ter.5 EdgeGraspChecker（夹取位置过于极限，规范序号 16）
+
+- **源文件**：`checkers/edge_grasp.py`、后端 `checkers/_vision.py`
+- **目标**：检出**夹爪夹在物体边缘 / 棱角 / 尖端 / 一角**而非**主体 / 中部 / 重心附近**的
+  抓取——边缘抓取夹取面积小，易夹偏、夹不稳、脱手，属低质量采集。
+- **为何走多模态**：「夹的是边缘还是主体」需要**先定位被操作物体、再判断夹爪接触点相对物体
+  的空间位置**，纯像素 / 帧差 / 光流绕不开这一语义识别步骤，不稳健，故整体交给多模态模型。
+- **与 colormatch 的同构（为何同样简单）**：本项可按**静态属性 + 逐帧独立判定 + 占比聚合**
+  处理，**不需要时序状态机**（不像 regrasp / object_slip 要逐臂跨时间推理）。因此与
+  `colormatch` 共用同一套路：少量抽帧 → 逐帧独立判 → 代码侧按占比聚合，单次请求成本低。
+- **逐帧 schema**：模型逐帧回 `{index, edge_grasp, object_label, confidence}`
+  （`_vision._edge_grasp_frame_schema`）；**看不到夹爪正夹住物体（夹爪张开 / 未接触 / 物体
+  被完全遮挡 / 已出画 / 看不清接触点）的帧可省略不返回**——这些帧不计入分母。
+
+#### 流程（image 逐帧 + 代码侧占比聚合）
+
+```
+1. 本地抽帧：sample_frames_jpeg 按 sample_fps（默认 2，需看清夹取瞬间的接触点）均匀抽帧为 JPEG
+   （缩到 frame_max_h=360）；长视频自适应降采样 eff_fps = min(sample_fps, max_frames/duration)，
+   保证 ≤ max_frames（默认 60）覆盖全片。
+2. 单次请求：模型逐帧回 {index, edge_grasp, object_label, confidence}；只对「能看清夹爪正夹住
+   某物体且能判断夹取位置」的帧返回。提示词除 robot_hint 外还注入 task_hint 帮模型定位被操作物。
+3. 代码侧聚合（evaluate_edge_grasp，纯函数可单测）：
+   - 只在「模型返回了判定」的帧里统计（未返回 = 无法判断夹取位置 → 不计入分母）；
+   - min_confidence>0 时，低置信度帧也跳过；
+   - 「夹在边缘」(edge=True) 帧占比 hit_ratio = n_edge / n_judged；
+   - 有效判定帧数 < min_judged_frames（默认 2）→ 报 WARN「无法评估」（避免单帧误判）；
+   - 否则 hit_ratio >= hit_ratio（默认 0.5）→ 命中（默认 WARN）。
+   score = 1 - hit_ratio（越高越好，越多帧夹在主体越好）。
+```
+
+#### 关键阈值
+
+| 参数 | 默认 | 含义 |
+| --- | --- | --- |
+| `sample_fps` | 2.0 | 抽帧采样率（需看清夹取瞬间的接触点，建议 >=2） |
+| `max_frames` | 60 | 单视频抽帧上限（长视频自动降采样覆盖全片） |
+| `hit_ratio` | 0.5 | 能判定的帧里「夹在边缘」占比 ≥ 此值即命中 |
+| `min_judged_frames` | 2 | 有效判定帧数下限，低于此报 WARN（无法评估） |
+| `min_confidence` | 0.0 | 低于此的帧判定跳过（0=不启用） |
+
+#### 已知局限
+
+- 「边缘 vs 主体」带主观性（细长物体、对称物体的「边缘」界定本就模糊），模型判定会有边界
+  波动；故默认仅报 **WARN** 作人工复核提示，并以「占比 ≥ 阈值」聚合压单帧噪声。
+- 物体被夹爪 / 机械臂长时间遮挡、或固定机位看不清接触点时 `n_judged` 偏低 → 报 WARN 无法评估。
+- **降级**：缺 API key / SDK / 抽帧失败 / 接口异常 / 无有效判定帧 → WARN，不阻塞流水线。
+
+> **启用方式**：`pip install -e ".[gemini]"`（或 `".[openai]"`）→ 设对应 API key →
+> 把 `config` 的 `checks.edge_grasp` 改为 `true`（默认 false，因属付费远程调用）。
+
 ---
 
 ## 4. 检测器速查表
@@ -743,6 +794,7 @@ metadata 抽取并注入两类提示，帮模型锁定目标，**有就用、缺
 | regrasp | WARN（默认关闭） | 去抖后逐臂持有段数（≥2 即二次抓取） | pyarrow（parquet 优先，零付费）/ ffmpeg + google-genai 或 openai + 网络（回退） | parquet 不可用 → 回退模型；缺 key/SDK、抽帧/接口异常 → WARN |
 | object_slip | WARN（默认关闭） | 持有结束时夹爪仍闭合却脱手（滑落） | pyarrow（夹爪信号优先）+ ffmpeg + google-genai 或 openai + 网络 | parquet 不可用 → 逐臂回退模型夹爪；缺 key/SDK、抽帧/接口异常 → WARN |
 | colormatch | WARN（默认关闭） | 可辨识帧中"操作物与桌面同色难分辨"占比 ≥ 阈值 | ffmpeg + google-genai 或 openai + 网络 | 缺 key/SDK、抽帧/接口异常、无有效判定帧 → WARN |
+| edge_grasp | WARN（默认关闭） | 可判定帧中"夹爪夹在物体边缘而非主体"占比 ≥ 阈值 | ffmpeg + google-genai 或 openai + 网络 | 缺 key/SDK、抽帧/接口异常、无有效判定帧 → WARN |
 
 ---
 

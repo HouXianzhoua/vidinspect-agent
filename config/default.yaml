@@ -30,6 +30,7 @@ checks:
   regrasp: false            # 规范1：二次抓取（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
   object_slip: false        # 规范21：物体滑落（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
   colormatch: false         # 规范19：操作物与桌面同色（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
+  edge_grasp: false         # 规范16：夹取位置过于极限（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
 
 # 元数据检查（分辨率 / 帧率 / 时长 + 声明 vs 实测交叉核对）
 metadata:
@@ -255,6 +256,34 @@ colormatch:
   frame_max_h: 360          # 抽帧下采样高度（省 token）
   max_frames: 16            # 单视频抽帧上限（静态属性，少量均匀帧覆盖全片即可）
   hit_ratio: 0.5            # 能识别物体的帧里"难分辨"占比 ≥ 此值即命中
+  min_judged_frames: 2      # 有效判定帧数下限，低于此报 WARN(无法评估)避免单帧误判
+  min_confidence: 0.0       # 低于此置信度的帧判定跳过(不计入)（0=不启用）
+  temperature: 0.0
+  timeout: 120.0
+  gemini:
+    model: gemini-2.5-flash
+    api_key_env: GEMINI_API_KEY
+  openai:
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+
+# 夹取位置过于极限检测（质检规范序号 16，多模态）
+# 规范：抓取的是物体边缘而不是主体——夹爪应夹在物体主体/重心附近，夹在边缘/棱角/极限位置
+#   容易夹不稳、夹偏或脱手。与 colormatch 同属「逐帧独立判 + 占比聚合」（无需时序状态机）：
+#   本地抽帧 → 模型逐帧回 {edge_grasp, object_label, confidence}（只对「看清夹爪正夹住物体」的帧返回）
+#   → 代码侧在能判定的帧里，「夹在边缘」帧占比 ≥ hit_ratio 即命中。因「边缘 vs 主体」带主观性，
+#   命中默认 WARN（人工复核）。
+# 注意：调用付费多模态 API，需安装对应后端依赖并设置 API key，同时把 checks.edge_grasp 设为 true。
+#   gemini: pip install -e ".[gemini]" + 环境变量 GEMINI_API_KEY
+#   openai: pip install -e ".[openai]" + 环境变量 OPENAI_API_KEY
+# 缺 key / SDK / 接口异常 / 抽帧失败时降级为 WARN，不阻塞流水线。
+edge_grasp:
+  severity: warn            # 命中时的严重级别：warn / fail
+  provider: gemini          # gemini / openai（仅 image 逐帧模式）
+  sample_fps: 2.0           # 抽帧采样率（需看清夹取瞬间的接触点，建议 >=2）
+  frame_max_h: 360          # 抽帧下采样高度（省 token）
+  max_frames: 60            # 单视频抽帧上限（长视频自动降采样以覆盖全片）
+  hit_ratio: 0.5            # 能判定的帧里"夹在边缘"占比 ≥ 此值即命中
   min_judged_frames: 2      # 有效判定帧数下限，低于此报 WARN(无法评估)避免单帧误判
   min_confidence: 0.0       # 低于此置信度的帧判定跳过(不计入)（0=不启用）
   temperature: 0.0
