@@ -80,8 +80,10 @@
   **时序**用真实信号驱动。逐臂判定是单目标、忽略物体身份，故「夹爪闭合段数」即「抓取次数」，
   **parquet 路径完全不调模型**（无需 API key、零付费调用、用全分辨率时间轴）。
 - **收益**：去抖 / 持有段计数落到真实信号上更稳，且可**大幅降低付费多模态调用**。
-- **落地**：`RegraspChecker.check` 改为 **parquet 优先**：经 `checkers/_lerobot.py` 的
-  `find_episode_parquet` 自定位同 episode parquet、`read_gripper_opening` 读各侧开合，
+- **落地**（**已对齐 §1 摄入 / 编排层枢纽**）：`RegraspChecker.check` 改为 **parquet 优先**：
+  优先用摄入层（`GroupResolver`）注入到 `metadata["lerobot"]["parquet_path"]` 的 parquet 指针
+  （单一数据源，与 `static` / `object_slip` 一致），经 `_lerobot.gripper_opening_from_metadata`
+  读各侧开合；未经摄入层注入时才 `find_episode_parquet` 自定位兜底。
   用 episode 自身区间相对归一化阈值化为逐帧「闭合」（复用 §2.3 的 `opening_to_closed`），
   夹爪闭合即持有 → 复用 `detect_regrasp(single_object=True)` 逐臂计数。新增 `regrasp` 配置项
   `use_parquet_gripper` / `gripper_closed_is_low` / `gripper_closed_frac` / `gripper_min_span`。

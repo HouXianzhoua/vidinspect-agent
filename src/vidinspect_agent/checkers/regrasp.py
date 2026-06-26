@@ -16,14 +16,16 @@
 留在代码侧（逐臂去抖后的持有段计数），确定可复现。缺 API key / SDK 缺失 /
 抽帧失败 / 接口异常 → 一律降级为 WARN，不阻塞流水线。
 
-**夹爪信号来源（规范1 §2.2 改造）**：抓取 / 释放的「时序」本就以真实信号存在于
-LeRobot 组的 parquet 里（``puppet.end_effector_*_position_align``，见
+**夹爪信号来源（规范1 §2.2 改造，已对齐 §1 摄入 / 编排层枢纽）**：抓取 / 释放的「时序」
+本就以真实信号存在于 LeRobot 组的 parquet 里（``puppet.end_effector_*_position_align``，见
 ``docs/dataset_inputs.md §3``）。逐臂判定是单目标、忽略物体身份，故「夹爪闭合段数」
-即「抓取次数」——当视频位于 LeRobot v3.0 组内、能自定位到同 episode parquet 且装有
-``pyarrow`` 时，**优先用 parquet 夹爪开合真实信号逐臂判定**：完全不调多模态模型
-（无需 API key、零付费调用、用全分辨率时间轴），去抖 / 计数落在真实信号上更稳。
-任一前置不满足（配置关闭 / 非 LeRobot 布局 / 缺 parquet / 缺 pyarrow / 缺视频 fps /
-开合区间过小不可判）→ 自动回退到原多模态逐帧推断路径，行为同改造前。
+即「抓取次数」——当视频位于 LeRobot v3.0 组内且装有 ``pyarrow`` 时，**优先用 parquet 夹爪
+开合真实信号逐臂判定**：完全不调多模态模型（无需 API key、零付费调用、用全分辨率时间轴），
+去抖 / 计数落在真实信号上更稳。**优先用摄入层注入的 parquet 指针**
+（``metadata["lerobot"]["parquet_path"]``，由 ``GroupResolver`` 逐组解析，单一数据源，与
+``static`` / ``object_slip`` 一致）；未经摄入层注入时（绕过 ``GroupResolver`` 直接调用
+pipeline）才按视频路径自定位兜底。任一前置不满足（配置关闭 / 非 LeRobot 布局 / 缺 parquet /
+缺 pyarrow / 缺视频 fps / 开合区间过小不可判）→ 自动回退到原多模态逐帧推断路径，行为同改造前。
 """
 from __future__ import annotations
 
@@ -212,7 +214,10 @@ class RegraspChecker(BaseChecker):
         """§2.2：用 parquet 夹爪开合真实信号逐臂判二次抓取（不调模型 / 不抽帧）。
 
         逐臂单目标、忽略物体身份，故「夹爪闭合段数」即「抓取次数」，时序完全由真实信号
-        驱动。任一前置不满足（配置关闭 / 非 LeRobot 组 / 缺 parquet / 缺 pyarrow / 缺视频
+        驱动。**对齐 §1 枢纽**：优先用摄入层（``GroupResolver``）注入到
+        ``metadata["lerobot"]["parquet_path"]`` 的 parquet 指针（单一数据源），仅当指针缺失
+        （绕过 ``GroupResolver`` 直接调用 pipeline）时才按视频路径 ``find_episode_parquet``
+        自定位兜底。任一前置不满足（配置关闭 / 非 LeRobot 组 / 缺 parquet / 缺 pyarrow / 缺视频
         fps / 各侧开合整段不可判）→ 返回 ``None``，由调用方回退到多模态路径。
         """
         if not cfg.get("use_parquet_gripper", True):
@@ -220,12 +225,19 @@ class RegraspChecker(BaseChecker):
         video_fps = metadata.get("fps")
         if not video_fps or video_fps <= 0:
             return None
-        parquet_path = _lerobot.find_episode_parquet(path)
-        if parquet_path is None:
-            return None
-        openings = _lerobot.read_gripper_opening(parquet_path)
+        # 优先：§1 摄入层（GroupResolver）注入到 metadata["lerobot"]["parquet_path"] 的指针
+        # （单一数据源，与 static / object_slip 一致地对齐枢纽，不再各检测器各自定位）。
+        parquet_path = (metadata.get("lerobot") or {}).get("parquet_path")
+        openings = _lerobot.gripper_opening_from_metadata(metadata)
+        # 兜底：未经摄入层注入时（绕过 GroupResolver 直接调用 pipeline）按视频路径自定位。
         if not openings:
-            return None
+            located = _lerobot.find_episode_parquet(path)
+            if located is None:
+                return None
+            openings = _lerobot.read_gripper_opening(located)
+            if not openings:
+                return None
+            parquet_path = str(located)
 
         closed_is_low = bool(cfg.get("gripper_closed_is_low", True))
         closed_frac = float(cfg.get("gripper_closed_frac", 0.5))
@@ -265,7 +277,7 @@ class RegraspChecker(BaseChecker):
 
         details = {
             "source": "parquet",
-            "parquet": str(parquet_path),
+            "parquet": str(parquet_path) if parquet_path else None,
             "arm_grasp_counts": arm_counts,
             "offending_arms": {s: c for s, c in offenders},
             "grasp_start_sec": {s: arm_starts_sec[s] for s, _c in offenders},
