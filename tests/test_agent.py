@@ -8,6 +8,7 @@ from vidinspect_agent.checkers.edge_grasp import evaluate_edge_grasp
 from vidinspect_agent.checkers.object_slip import _pick_closed, detect_slip
 from vidinspect_agent.checkers.occlusion import evaluate_occlusion
 from vidinspect_agent.checkers.regrasp import detect_regrasp
+from vidinspect_agent.checkers.tablecloth import evaluate_tablecloth
 from vidinspect_agent.models import CheckResult, Severity, VideoReport
 
 
@@ -413,6 +414,37 @@ def test_occlusion_clear_object_not_flagged():
     assert out["score"] > 0.5
 
 
+def _tc(verdicts, thr=0.3, min_hit=2, min_conf=0.0):
+    return evaluate_tablecloth(
+        verdicts, hit_ratio_thr=thr, min_hit_frames=min_hit, min_confidence=min_conf
+    )
+
+
+def test_tablecloth_caught_detected():
+    # 含桌布帧里多帧判定误夹，占比 ≥ 阈值且命中帧数达标 → 命中。
+    verdicts = [
+        {"has_cloth": True, "caught": True, "confidence": 0.9},
+        {"has_cloth": True, "caught": True, "confidence": 0.8},
+        {"has_cloth": True, "caught": False, "confidence": 0.9},
+        {"has_cloth": True, "caught": False, "confidence": 0.7},
+    ]
+    out = _tc(verdicts)
+    assert out["detected"] is True
+    assert out["n_caught"] == 2 and out["n_cloth"] == 4
+
+
+def test_tablecloth_clean_not_flagged():
+    # 含桌布但夹爪未误夹（桌布平整）→ 不命中。
+    verdicts = [
+        {"has_cloth": True, "caught": False, "confidence": 0.9},
+        {"has_cloth": True, "caught": False, "confidence": 0.9},
+        {"has_cloth": True, "caught": True, "confidence": 0.6},
+    ]
+    out = _tc(verdicts)
+    assert out["detected"] is False
+    assert out["score"] > 0.5
+
+
 def _eg(verdicts, thr=0.5, min_conf=0.0):
     return evaluate_edge_grasp(verdicts, hit_ratio_thr=thr, min_confidence=min_conf)
 
@@ -505,6 +537,53 @@ def test_edge_grasp_checker_missing_api_key(tmp_path, monkeypatch):
     res = EdgeGraspChecker({"edge_grasp": {}}).check(video, {"fps": 30.0})[0]
     assert res.severity == Severity.WARN
     assert res.details.get("error") == "missing_api_key"
+
+
+def test_tablecloth_non_cloth_frames_excluded():
+    # 无桌布的帧不计入分母，只在含桌布帧里算占比。
+    verdicts = [
+        {"has_cloth": False, "caught": False, "confidence": 0.9},
+        None,
+        {"has_cloth": True, "caught": True, "confidence": 0.9},
+        {"has_cloth": True, "caught": True, "confidence": 0.9},
+    ]
+    out = _tc(verdicts)
+    assert out["n_cloth"] == 2 and out["hit_ratio"] == 1.0
+    assert out["detected"] is True
+
+
+def test_tablecloth_single_caught_frame_suppressed():
+    # 仅 1 帧误夹（< min_hit_frames）→ 不命中，压制单帧误判。
+    verdicts = [
+        {"has_cloth": True, "caught": True, "confidence": 0.9},
+        {"has_cloth": True, "caught": False, "confidence": 0.9},
+    ]
+    out = _tc(verdicts)
+    assert out["n_caught"] == 1
+    assert out["detected"] is False
+
+
+def test_tablecloth_no_cloth_scene_not_detected():
+    # 全程无桌布 → n_cloth=0，不命中（上层据 min_cloth_frames 判 PASS 不适用）。
+    verdicts = [
+        {"has_cloth": False, "caught": False, "confidence": 0.9},
+        {"has_cloth": False, "caught": False, "confidence": 0.9},
+    ]
+    out = _tc(verdicts)
+    assert out["n_cloth"] == 0
+    assert out["detected"] is False
+
+
+def test_tablecloth_low_confidence_frames_skipped():
+    # 启用 min_confidence 后，低置信度的含桌布帧被跳过，不计入。
+    verdicts = [
+        {"has_cloth": True, "caught": True, "confidence": 0.2},
+        {"has_cloth": True, "caught": False, "confidence": 0.9},
+        {"has_cloth": True, "caught": False, "confidence": 0.9},
+    ]
+    out = _tc(verdicts, min_conf=0.5)
+    assert out["n_cloth"] == 2 and out["n_caught"] == 0
+    assert out["detected"] is False
 
 
 def test_task_hint_empty_when_no_metadata():

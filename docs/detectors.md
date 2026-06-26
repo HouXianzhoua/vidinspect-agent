@@ -62,8 +62,8 @@ def check(self, path: Path, metadata: dict[str, Any]) -> list[CheckResult]:
 ### 1.4 装配开关
 
 `config["checks"]` 逐项控制是否启用。装配顺序：
-`integrity → metadata → visual → static → dup_frame → jump → endpoint_static → freeze → noise → brightness → gripper_offscreen → regrasp → object_slip → colormatch → occlusion → edge_grasp`。
-除 `gripper_offscreen`（规范12）/ `regrasp`（规范1）/ `object_slip`（规范21）/ `colormatch`（规范19）/ `occlusion`（规范15）/ `edge_grasp`（规范16）六项付费多模态远程调用**默认关闭**外，其余默认全开。
+`integrity → metadata → visual → static → dup_frame → jump → endpoint_static → freeze → noise → brightness → gripper_offscreen → regrasp → object_slip → colormatch → occlusion → edge_grasp → tablecloth`。
+除 `gripper_offscreen`（规范12）/ `regrasp`（规范1）/ `object_slip`（规范21）/ `colormatch`（规范19）/ `occlusion`（规范15）/ `edge_grasp`（规范16）/ `tablecloth`（规范17）七项付费多模态远程调用**默认关闭**外，其余默认全开。
 
 ### 1.5 优雅降级原则
 
@@ -860,6 +860,55 @@ metadata 抽取并注入两类提示，帮模型锁定目标，**有就用、缺
 > **启用方式**：`pip install -e ".[gemini]"`（或 `".[openai]"`）→ 设对应 API key →
 > 把 `config` 的 `checks.edge_grasp` 改为 `true`（默认 false，因属付费远程调用）。
 
+### 3ter.7 TableclothChecker（误夹桌布，规范序号 17）
+
+- **源文件**：`checkers/tablecloth.py`、后端 `checkers/_vision.py`
+- **目标**：检出**含桌布 / 台布场景下，夹爪夹取物品时连带桌布一起被夹起 / 拎起**，导致桌布
+  被牵拉、隆起、明显变形的视频。
+- **为何走多模态**：「物体连同其下桌布被一起拎起」与「正常抓取桌面上的物体」在像素上都表现为
+  夹爪附近的运动，纯像素 / 光流绕不开「桌布是否随物体离开台面、是否被牵拉变形」这一
+  **语义 + 空间关系**判断，不稳健，故整体交给多模态模型一步判定。
+- **与 colormatch 的异同**：同属**逐帧独立判 + 占比聚合**（无需时序状态机），但本项是
+  **含桌布场景专项**——多一道**前置门控**：先判该帧是否含桌布，仅在含桌布帧里统计误夹占比；
+  全程无 / 少桌布则本项不适用，判 PASS（而非 colormatch 那样的 WARN「无法评估」）。
+
+#### 流程（image 逐帧 + 前置门控 + 代码侧占比聚合）
+
+```
+1. 本地抽帧：sample_frames_jpeg 按 sample_fps（默认 2，误夹多在抬起短窗口内，采样率高于
+   colormatch）均匀抽帧为 JPEG（缩到 frame_max_h=360）；max_frames 默认 60，长视频自适应降采样覆盖全片。
+2. 单次请求：模型逐帧回 {index, has_tablecloth, tablecloth_caught, object_label, confidence}
+   （_vision._tablecloth_frame_schema）；看不清桌面/夹爪的帧可省略不返回。
+   提示词除 robot_hint 外，复用 colormatch 的 task_hint 注入被操作物体/任务描述帮模型定位。
+3. 代码侧聚合（evaluate_tablecloth，纯函数可单测）：
+   - 只在 has_tablecloth=True 的帧里统计（n_cloth）；min_confidence>0 时低置信度帧跳过；
+   - 误夹占比 hit_ratio = n_caught / n_cloth；
+   - 含桌布帧数 < min_cloth_frames（默认 2）→ 上层判 PASS「本项不适用」（无桌布场景）；
+   - 否则 n_caught >= min_hit_frames（默认 2）且 hit_ratio >= hit_ratio（默认 0.3）→ 命中（默认 WARN）。
+   score = 1 - hit_ratio（越高越好，越不误夹越好）。
+```
+
+#### 关键阈值
+
+| 参数 | 默认 | 含义 |
+| --- | --- | --- |
+| `sample_fps` | 2.0 | 抽帧采样率（误夹在抬起短窗口内，建议 >=2 以免漏掉） |
+| `max_frames` | 60 | 单视频抽帧上限（长视频自适应降采样覆盖全片） |
+| `hit_ratio` | 0.3 | 含桌布帧里"误夹"占比 ≥ 此值即命中（误夹仅在抬起段，阈值低于 colormatch） |
+| `min_cloth_frames` | 2 | 含桌布帧数下限，低于此判 PASS（本项不适用） |
+| `min_hit_frames` | 2 | 命中所需最少"误夹"帧数，压制单帧误判 |
+| `min_confidence` | 0.0 | 低于此的帧判定跳过（0=不启用） |
+
+#### 已知局限
+
+- 「连带桌布被夹起 / 牵拉变形」边界带主观性（轻微褶皱 vs 明显变形），模型判定会有波动；故默认
+  仅报 **WARN** 作人工复核提示，并以「占比 ≥ 阈值 + 最少命中帧数」双门限压单帧噪声。
+- 含桌布判定不稳时（桌布与桌面同色 / 局部遮挡）体现为 `n_cloth` 偏低，可能误判为「本项不适用」。
+- **降级**：缺 API key / SDK / 抽帧失败 / 接口异常 → WARN，不阻塞流水线。
+
+> **启用方式**：`pip install -e ".[gemini]"`（或 `".[openai]"`）→ 设对应 API key →
+> 把 `config` 的 `checks.tablecloth` 改为 `true`（默认 false，因属付费远程调用）。
+
 ---
 
 ## 4. 检测器速查表
@@ -883,6 +932,7 @@ metadata 抽取并注入两类提示，帮模型锁定目标，**有就用、缺
 | colormatch | WARN（默认关闭） | 可辨识帧中"操作物与桌面同色难分辨"占比 ≥ 阈值 | ffmpeg + google-genai 或 openai + 网络 | 缺 key/SDK、抽帧/接口异常、无有效判定帧 → WARN |
 | occlusion | WARN（默认关闭） | 首段可辨识帧中"夹爪遮挡操作物体"占比 ≥ 阈值 | ffmpeg + google-genai 或 openai + 网络 | 缺 key/SDK、抽帧/接口异常、无有效判定帧 → WARN |
 | edge_grasp | WARN（默认关闭） | 可判定帧中"夹爪夹在物体边缘而非主体"占比 ≥ 阈值 | ffmpeg + google-genai 或 openai + 网络 | 缺 key/SDK、抽帧/接口异常、无有效判定帧 → WARN |
+| tablecloth | WARN（默认关闭） | 含桌布帧中"误夹桌布致变形"占比 ≥ 阈值且命中帧数达标 | ffmpeg + google-genai 或 openai + 网络 | 含桌布帧不足 → PASS（不适用）；缺 key/SDK、抽帧/接口异常 → WARN |
 
 ---
 

@@ -19,6 +19,7 @@ from vidinspect_agent.checkers import (
     OcclusionChecker,
     RegraspChecker,
     StaticChecker,
+    TableclothChecker,
     TailActionChecker,
     VisualChecker,
 )
@@ -72,6 +73,9 @@ def _build_checkers(config: dict[str, Any]) -> list[BaseChecker]:
     # 夹取位置过于极限（规范16）同样走付费多模态远程调用，默认关闭。
     if checks.get("edge_grasp", False):
         checkers.append(EdgeGraspChecker(config))
+    # 误夹桌布（规范17）同样走付费多模态远程调用，默认关闭。
+    if checks.get("tablecloth", False):
+        checkers.append(TableclothChecker(config))
     return checkers
 
 
