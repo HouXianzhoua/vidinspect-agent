@@ -8,6 +8,7 @@ from vidinspect_agent.checkers import (
     ColorMatchChecker,
     DupFrameChecker,
     EndpointStaticChecker,
+    FrameConsistencyChecker,
     FreezeChecker,
     GripperOffscreenChecker,
     IntegrityChecker,
@@ -43,6 +44,9 @@ def _build_checkers(config: dict[str, Any]) -> list[BaseChecker]:
         checkers.append(EndpointStaticChecker(config))
     if checks.get("freeze", True):
         checkers.append(FreezeChecker(config))
+    # 画面与关节一致性（规范18）：腕部相机随臂运动，纯 CPU 帧差 + parquet 关节地面真值。
+    if checks.get("frame_consistency", True):
+        checkers.append(FrameConsistencyChecker(config))
     if checks.get("noise", True):
         checkers.append(NoiseChecker(config))
     # 画面过暗 / 欠曝（规范20子项），纯 CPU 亮度统计。

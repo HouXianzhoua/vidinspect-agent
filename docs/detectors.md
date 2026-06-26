@@ -440,6 +440,53 @@ score       = clip(luma_median / min_luma, 0, 1)   # 越高越好
   人工复核提示；阈值建议按数据源在 `config['brightness']` 标定。纯判定逻辑抽成
   `evaluate_brightness()` 便于单测。
 
+### 3bis.5 FrameConsistencyChecker（画面与关节一致性，规范序号 18）
+
+- **源文件**：`checkers/frame_consistency.py`、共享 helper `checkers/_joints.py`
+- **目标**：检出「主画面机械臂在动、而对应夹爪（腕部）相机画面不动」（采集冻结 / 串流延迟 /
+  掉帧 / 贴错相机）。腕部相机 `camera_left` / `camera_right` 刚性装在左 / 右夹爪上随对应臂运动
+  （见 `dataset_inputs.md §2`），某只臂运动时其腕部相机画面应大幅变化。
+- **为何不用 AI**：判定拆成两个都无需语义识别的量——
+  - 「该侧臂动没动」：取 LeRobot parquet 的 `puppet.arm_{left,right}_position_align` 逐帧关节速度，
+    是运动的**地面真值**（无需从俯视画面分割左右臂，那才要 AI）。
+  - 「腕部相机画面动没动」：相邻帧 `mean|ΔY|`（复用 `_frames.stream_gray_diffs`）。
+- **配对**：`camera_key` 解析机位 side（`_joints.camera_side`），`camera_left ↔ 左臂`、
+  `camera_right ↔ 右臂`；`camera_top` 俯视固定机位不适用。
+- **原理（相对底噪，抗下采样尺度漂移）**：以相机时间轴为主轴，把关节速度按比例最近邻重采样对齐
+  到相机帧数（容忍 parquet 行数与解码帧数的轻微长度差），再：
+
+```
+arm_moving[i] = joint_speed_aligned[i] >= joint_move_speed       # 默认 0.01 rad/帧
+cam_floor     = median(cam_motion[ 臂静止帧 ])                    # 该相机自身底噪
+static_thr    = max(cam_floor * floor_k, abs_static_floor)        # floor_k=3.0, abs_floor=0.1
+bad[i]        = arm_moving[i] AND cam_motion[i] <= static_thr
+detected      = longest_run(bad) / fps > min_inconsistent_sec     # 默认 1.0s
+```
+
+- **判定**：臂在动、而腕部相机帧差贴着自身底噪（远低于随臂运动应有的量级）的**最长连续段**
+  超过 `min_inconsistent_sec`（默认 1.0s）→ 命中（默认 WARN）。完全冻结（`cam_motion≈0`）必
+  ≤ `abs_static_floor`，是本判据的子集（`freeze` 的超集）。
+- **关键设计**：
+  - **「某只臂确实没动」天然不误报**——该侧无「臂在动」帧（`arm_moving` 全 False）则 `reason=arm_idle`
+    直接 PASS，不评估。
+  - **静止帧不足时退回纯绝对阈值**（`floor_estimated=false`）：整段都在动、无静止参照时无法可靠估
+    相对底噪，故只用 `abs_static_floor` 抓硬冻结，避免把正常大运动误判为静止。
+- **与 `freeze`（§3bis.2）的边界**：`freeze` 负责「与关节无关的单段长冻结（规范5）」，以严格帧差
+  绝对阈值判定；本检测器是其超集，专司「画面动得与臂的运动不匹配（规范18）」，需关节地面真值。
+  `freeze` 命中且关节仍在动时把「关节仍在动」作为补充信号写入文案，但规范18 判定归属本检测器。
+- **降级**：非腕部机位（`camera_top`）/ 非 LeRobot 视频 → 不适用，PASS 跳过（不产生噪声）；
+  缺 parquet 关节 / 缺 pyarrow / 解码失败 / 无 fps → WARN。纯判定逻辑抽成
+  `evaluate_frame_consistency()` 便于单测。
+- **关键阈值**（`config['frame_consistency']`）：
+
+| 参数 | 默认 | 含义 |
+| --- | --- | --- |
+| `joint_move_speed` | 0.01 | rad/帧：该侧臂关节速度高于此视为「在动」 |
+| `floor_k` | 3.0 | 画面帧差需超过自身底噪的倍数，否则算「画面没动」 |
+| `abs_static_floor` | 0.1 | 帧差(0–255)绝对下限（近似「同一帧」，兜底压缩噪声） |
+| `min_inconsistent_sec` | 1.0 | 「臂在动却画面静止」最长连续段超过此秒数即命中 |
+| `min_still_frames` | 5 | 估相机底噪所需最少「臂静止」帧数，不足则退回纯绝对阈值 |
+
 ---
 
 ## 3ter. 多模态检测器（序号 12）
@@ -739,6 +786,7 @@ metadata 抽取并注入两类提示，帮模型锁定目标，**有就用、缺
 | freeze | WARN | 单段最长冻结时长 | ffmpeg + numpy | 缺 fps / 超时 → WARN |
 | noise | WARN | Immerkær 噪声 sigma 中位数 | OpenCV + numpy | 缺 OpenCV / 读帧失败 → WARN |
 | brightness | WARN | 全画面平均亮度中位数（过暗/欠曝） | OpenCV + numpy | 缺 OpenCV / 读帧失败 → WARN |
+| frame_consistency | WARN | 臂在动但腕部相机画面贴底噪的最长连续段（规范18） | ffmpeg + numpy + LeRobot parquet 关节（pyarrow） | 非腕部/非 LeRobot → PASS 跳过；缺关节/pyarrow/fps → WARN |
 | gripper_offscreen | WARN（默认关闭） | 最长连续出镜时长（image 逐帧 visible / video 区间） | ffmpeg + google-genai 或 openai + 网络 | 缺 key/SDK、抽帧/接口异常、mode 不支持 → WARN |
 | regrasp | WARN（默认关闭） | 去抖后逐臂持有段数（≥2 即二次抓取） | pyarrow（parquet 优先，零付费）/ ffmpeg + google-genai 或 openai + 网络（回退） | parquet 不可用 → 回退模型；缺 key/SDK、抽帧/接口异常 → WARN |
 | object_slip | WARN（默认关闭） | 持有结束时夹爪仍闭合却脱手（滑落） | pyarrow（夹爪信号优先）+ ffmpeg + google-genai 或 openai + 网络 | parquet 不可用 → 逐臂回退模型夹爪；缺 key/SDK、抽帧/接口异常 → WARN |

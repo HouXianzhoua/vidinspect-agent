@@ -101,9 +101,12 @@ class FreezeChecker(BaseChecker):
 
         if max_freeze_sec > max_freeze_sec_thr:
             if inconsistent:
+                # 规范18（画面/关节不一致）的判定归属 frame_consistency 检测器；本检测器仍
+                # 报规范5（单段长冻结），并把"期间关节仍在动"作为补充信号写入文案与 details。
                 message = (
-                    f"疑似画面与关节不一致(规范18): 最长卡帧 {max_freeze_sec:.1f}s "
+                    f"疑似画面卡死(规范5): 最长卡帧 {max_freeze_sec:.1f}s "
                     f"(上限 {max_freeze_sec_thr:.1f}s)，期间对应臂关节仍在运动"
+                    f"（画面/关节不一致另见 frame_consistency/规范18）"
                 )
             else:
                 message = (
