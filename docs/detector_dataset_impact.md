@@ -93,12 +93,15 @@
 - **当前**：多模态逐帧判 holding + `gripper_closed`。
 - **变更**：关键信号 `gripper_closed` 直接取 parquet 夹爪开合值，不再靠模型推断。
 - **收益**：「持有结束时夹爪是否仍闭合」（滑落 vs 主动放下的唯一判据）落到真实信号上，判定更可靠。
-- **落地**（见 `detectors.md §3ter.3`）：经 §1 摄入层 `LeRobotContext.gripper(side)` 读逐帧开合，
-  用 episode 自身区间相对归一化阈值化为逐帧「闭合 / 张开」并对齐采样帧；模型仅保留 holding。
-  新增 `checkers/_lerobot.py`（夹爪信号 → 闭合序列纯逻辑）、`object_slip` 配置项
-  `use_parquet_gripper` / `gripper_closed_is_low` / `gripper_closed_frac` / `gripper_min_span`，
-  及可选依赖 `pip install -e ".[lerobot]"`（pyarrow）。**逐臂优雅降级**：parquet 不可用时
-  回退模型推断的 `gripper_closed`，`details.gripper_source` 标注每臂实际来源。
+- **落地**（见 `detectors.md §3ter.3`，**已对齐 §1 摄入 / 编排层枢纽**）：优先用摄入层
+  （`GroupResolver`）注入到 `metadata["lerobot"]["parquet_path"]` 的 parquet 指针（单一数据源），
+  经 `_lerobot.gripper_opening_from_metadata` → `lerobot.load_episode_frames` 读逐帧开合；
+  未经摄入层注入时（直接调用 pipeline）才 `find_episode_parquet` 自定位兜底。读出的开合用
+  episode 自身区间相对归一化阈值化为逐帧「闭合 / 张开」并对齐采样帧；模型仅保留 holding。
+  `checkers/_lerobot.py`（夹爪信号 → 闭合序列）、`object_slip` 配置项 `use_parquet_gripper` /
+  `gripper_closed_is_low` / `gripper_closed_frac` / `gripper_min_span`，及可选依赖
+  `pip install -e ".[lerobot]"`（pyarrow）。**逐臂优雅降级**：parquet 不可用时回退模型推断的
+  `gripper_closed`，`details.gripper_source` 标注每臂实际来源。
 
 ---
 

@@ -181,6 +181,13 @@ def test_find_episode_parquet_locates_sibling(tmp_path):
     assert _lerobot.find_episode_parquet(video) == parquet
 
 
+def test_gripper_opening_from_metadata_none_without_pointer():
+    # 对齐摄入层：无 metadata['lerobot']['parquet_path'] 指针 → None（上层回退自定位/模型）。
+    assert _lerobot.gripper_opening_from_metadata({}) is None
+    assert _lerobot.gripper_opening_from_metadata({"lerobot": {}}) is None
+    assert _lerobot.gripper_opening_from_metadata({"lerobot": {"parquet_path": None}}) is None
+
+
 def test_pick_closed_prefers_parquet_exact_side():
     parquet = {"left": [True, True], "right": [False, False]}
     seq, src = _pick_closed("left", parquet, {"left": [None, None]}, 2)

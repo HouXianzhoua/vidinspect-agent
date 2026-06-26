@@ -16,12 +16,14 @@
 留在代码侧（逐臂去抖 + 持有段末尾的夹爪状态判别），确定可复现。缺 API key / SDK /
 抽帧失败 / 接口异常 → 一律降级 WARN，不阻塞流水线。
 
-**夹爪信号来源（规范21 §2.3 改造）**：``gripper_closed`` 是本检测器的关键判据，而它本就
-以真实信号存在于 LeRobot 组的 parquet 里（``puppet.end_effector_*_position_align``）。
-故当视频位于 LeRobot v3.0 组内、能由 ``_lerobot.find_episode_parquet`` 自定位到同 episode
-parquet 且装有 ``pyarrow`` 时，**优先用 parquet 夹爪开合真实信号**构造逐帧 ``gripper_closed``
-（模型只继续负责「是否持有」），判定更可靠。任何条件不满足（非 LeRobot 布局 / 缺 parquet /
-缺 pyarrow / 缺视频 fps）→ 逐臂自动回退到模型推断的 ``gripper_closed``，行为与改造前一致。
+**夹爪信号来源（规范21 §2.3 改造，已对齐 §1 摄入 / 编排层枢纽）**：``gripper_closed`` 是
+本检测器的关键判据，而它本就以真实信号存在于 LeRobot 组的 parquet 里
+（``puppet.end_effector_*_position_align``）。**优先用摄入层注入的 parquet 指针**
+（``metadata["lerobot"]["parquet_path"]``，由 ``GroupResolver`` 逐组解析，单一数据源）读取夹爪
+开合，构造逐帧 ``gripper_closed``（模型只继续负责「是否持有」），判定更可靠、且省一份逐帧
+夹爪推断成本。未经摄入层注入时（绕过 ``GroupResolver`` 直接调用 pipeline）按视频路径自定位
+兜底。任何条件不满足（非 LeRobot 组 / 缺 parquet / 缺 pyarrow / 缺视频 fps）→ 逐臂自动回退
+到模型推断的 ``gripper_closed``，行为与改造前一致。
 """
 from __future__ import annotations
 
@@ -213,22 +215,33 @@ class ObjectSlipChecker(BaseChecker):
     ) -> tuple[dict[str, list[bool | None]], str | None]:
         """构造各侧「逐采样帧是否闭合」序列（来源 parquet 夹爪开合真实信号）。
 
-        夹爪开合经 ``_lerobot.find_episode_parquet`` 自定位同 episode parquet 后由
-        ``read_gripper_opening`` 读取。返回 ``({side: closed_seq_aligned}, parquet_path)``；
-        任一前置条件不满足（配置关闭 / 非 LeRobot 组 / 缺 pyarrow / 缺视频 fps / 列缺失）
-        → 返回 ``({}, None)``，上层据此逐臂回退模型推断信号。
+        **对齐数据摄入 / 编排层枢纽**：优先用 §1 摄入层（``GroupResolver``）注入到
+        ``metadata["lerobot"]["parquet_path"]`` 的 parquet 指针读夹爪开合（单一数据源，
+        不再各检测器各自定位）。仅当该指针缺失时（如绕过 ``GroupResolver`` 直接调用
+        ``pipeline.inspect_video``）才按视频路径 ``find_episode_parquet`` 自定位兜底。
+
+        返回 ``({side: closed_seq_aligned}, parquet_path)``；任一前置条件不满足（配置关闭 /
+        非 LeRobot 组 / 缺 pyarrow / 缺视频 fps / 列缺失）→ 返回 ``({}, None)``，
+        上层据此逐臂回退模型推断信号。
         """
         if not cfg.get("use_parquet_gripper", True):
             return {}, None
         video_fps = metadata.get("fps")
         if not video_fps or video_fps <= 0:
             return {}, None
-        parquet_path = _lerobot.find_episode_parquet(path)
-        if parquet_path is None:
-            return {}, None
-        openings = _lerobot.read_gripper_opening(parquet_path)
+
+        # 优先：摄入层已解析并注入的 parquet 指针（枢纽对齐，单一数据源）。
+        parquet_path = (metadata.get("lerobot") or {}).get("parquet_path")
+        openings = _lerobot.gripper_opening_from_metadata(metadata)
+        # 兜底：未经摄入层注入时（直接调用 pipeline）按视频路径自定位。
         if not openings:
-            return {}, None
+            located = _lerobot.find_episode_parquet(path)
+            if located is None:
+                return {}, None
+            openings = _lerobot.read_gripper_opening(located)
+            if not openings:
+                return {}, None
+            parquet_path = str(located)
 
         closed_is_low = bool(cfg.get("gripper_closed_is_low", True))
         closed_frac = float(cfg.get("gripper_closed_frac", 0.5))
@@ -240,7 +253,7 @@ class ObjectSlipChecker(BaseChecker):
                 closed_frac=closed_frac, min_span=min_span,
             )
             seqs[side] = _lerobot.map_to_sampled(per_frame, frame_times, float(video_fps))
-        return seqs, str(parquet_path)
+        return seqs, (str(parquet_path) if parquet_path else None)
 
 
 def _pick_closed(
