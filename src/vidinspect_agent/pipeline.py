@@ -17,6 +17,7 @@ from vidinspect_agent.checkers import (
     ObjectSlipChecker,
     RegraspChecker,
     StaticChecker,
+    TailActionChecker,
     VisualChecker,
 )
 from vidinspect_agent.checkers.base import BaseChecker
@@ -43,6 +44,9 @@ def _build_checkers(config: dict[str, Any]) -> list[BaseChecker]:
         checkers.append(EndpointStaticChecker(config))
     if checks.get("freeze", True):
         checkers.append(FreezeChecker(config))
+    # 末尾多余动作 / 视频帧数量问题（规范24）：纯 CPU，依赖 LeRobot 标注 + parquet 关节地面真值。
+    if checks.get("tail_action", True):
+        checkers.append(TailActionChecker(config))
     if checks.get("noise", True):
         checkers.append(NoiseChecker(config))
     # 画面过暗 / 欠曝（规范20子项），纯 CPU 亮度统计。

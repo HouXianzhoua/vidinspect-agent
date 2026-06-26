@@ -440,6 +440,40 @@ score       = clip(luma_median / min_luma, 0, 1)   # 越高越好
   人工复核提示；阈值建议按数据源在 `config['brightness']` 标定。纯判定逻辑抽成
   `evaluate_brightness()` 便于单测。
 
+### 3bis.5 TailActionChecker（视频帧数量问题 / 末尾多余动作，规范序号 24）
+
+- **源文件**：`checkers/tail_action.py`
+- **目标**：规范**允许**视频总帧数大于「标注的最后一个动作的结束帧」（末尾留静止冗余帧
+  无妨），但**不允许**该结束帧之后还存在**实际动作帧**（机械臂仍在操作却未被标注覆盖）。
+  因此判据不是「帧数对不对」，而是「标注末动作结束帧之后是否还有真实动作」。
+- **为何用关节而非像素**：本项要判的是**机器人动作**是否越过标注末尾，关节位移是动作的
+  地面真值；像素帧差会被腕部随动相机自身运动 / 光照 / 噪声干扰而误报。故以 LeRobot
+  puppet parquet 关节为唯一判据，缺关节信号时优雅降级 WARN。
+- **原理**：
+  1. 标注末动作结束帧 `last_end = max(子任务 end_frame)`——真实样本里子任务区间偶有
+     乱序 / 重叠，取最大结束帧比取末项更稳健。
+  2. 从同 episode puppet 关节读逐帧关节速度（`_joints.per_frame_speed`，相邻帧关节向量
+     L2 距离，所有臂拼接），只取末尾段 `tail = speed[last_end:]`（产生于 `last_end` 之后
+     的所有帧的运动）。
+  3. 该段出现一段**连续**「关节在动（`>= move_speed`）」且时长 `>= min_action_sec`
+     （即 `round(min_action_sec * fps)` 帧，下限 1 帧）即命中：
+
+```
+last_end       = max(subtask.end_frame)
+tail           = joint_speed[last_end:]
+tail_run       = longest_run(tail >= move_speed)        # 最长连续运动帧数
+tail_action_sec= tail_run / fps
+detected       = tail_action_sec >= min_action_sec      # 仅静止冗余帧则不命中
+score          = clip(1 - tail_action_sec / min_action_sec, 0, 1)   # 越高越好
+```
+
+- **判定**：`detected` → 命中（默认 WARN）；只是静止停留 / 标注已覆盖到末帧（tail 为空）→ PASS。
+- **去抖**：`min_action_sec`（默认 0.3s）过滤零星传感跳变，避免单帧关节毛刺误报。
+- **降级**：非 LeRobot 组 / 缺 `labels.json` 子任务 / 缺 fps / 缺 parquet 关节信号
+  （缺 pyarrow 或列缺失）→ WARN（无法评估），不阻塞流水线。
+- 纯判定逻辑抽成 `evaluate_tail_action()` / `last_labeled_end_frame()` 便于单测
+  （见 `tests/test_tail_action.py`）。
+
 ---
 
 ## 3ter. 多模态检测器（序号 12）
@@ -737,6 +771,7 @@ metadata 抽取并注入两类提示，帮模型锁定目标，**有就用、缺
 | jump | WARN | local_ratio_max + 四重守卫 | OpenCV | 打不开 → WARN，帧少 → PASS |
 | endpoint_static | WARN | 首/尾连续静止时长（自适应阈值） | ffmpeg + numpy | 缺 fps / 超时 → WARN |
 | freeze | WARN | 单段最长冻结时长 | ffmpeg + numpy | 缺 fps / 超时 → WARN |
+| tail_action | WARN | 标注末动作结束帧之后的最长连续关节运动时长 | pyarrow（parquet 关节）+ LeRobot 标注 | 非 LeRobot / 缺标注 / 缺关节 → WARN |
 | noise | WARN | Immerkær 噪声 sigma 中位数 | OpenCV + numpy | 缺 OpenCV / 读帧失败 → WARN |
 | brightness | WARN | 全画面平均亮度中位数（过暗/欠曝） | OpenCV + numpy | 缺 OpenCV / 读帧失败 → WARN |
 | gripper_offscreen | WARN（默认关闭） | 最长连续出镜时长（image 逐帧 visible / video 区间） | ffmpeg + google-genai 或 openai + 网络 | 缺 key/SDK、抽帧/接口异常、mode 不支持 → WARN |

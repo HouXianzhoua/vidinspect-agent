@@ -17,6 +17,9 @@
   - `freeze`：画面卡死 / 长时间卡帧（单段最长冻结时长 > 2s）
   - `noise`：严重噪点（Immerkær 噪声方差估计）
   - `brightness`：画面过暗 / 欠曝（规范20子项，全画面平均亮度中位数 < 阈值即命中；黑屏归 `visual`、花屏归 `integrity`，偏色/白平衡误报率高暂不做）
+  - `tail_action`：视频帧数量问题 / 末尾多余动作（规范24）。取 LeRobot 标注子任务 `end_frame` 最大值作「标注末动作结束帧」，
+    用同 episode puppet parquet 关节速度（地面真值）判断该帧之后是否仍有连续运动：允许末尾留静止冗余帧，但出现实际动作即命中。
+    缺标注 / 缺关节信号（非 LeRobot 组 / 缺 pyarrow）时降级为 WARN，不阻塞流水线。
 - **多模态检测器（默认关闭，可插拔后端）**：
   - `gripper_offscreen`：夹爪出境（规范12）。`mode=image`（默认，本地抽帧→逐帧判定→代码算
     最长连续出镜时长 >1s 命中）或 `mode=video`（整段视频交模型返回出镜区间，仅 gemini）；
