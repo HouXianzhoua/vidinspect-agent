@@ -50,6 +50,16 @@ class VisionBackend(ABC):
         """
         raise NotImplementedError(f"{self.name} 不支持 classify_grasp_frames")
 
+    def classify_colormatch_frames(
+        self, frames: list[Frame], prompt: str
+    ) -> dict[int, dict[str, Any]]:
+        """逐帧判定「被操作物体是否与桌面同色难分辨」：
+
+        返回 ``{frame_index: {hard, object_label, confidence}}``。供 colormatch
+        （操作物与桌面颜色相同，规范19）检测器复用。默认不支持，由子类实现。
+        """
+        raise NotImplementedError(f"{self.name} 不支持 classify_colormatch_frames")
+
     def detect_video_intervals(self, video_path: str, prompt: str) -> list[Interval]:
         """video 模式：返回夹爪出镜区间。默认不支持。"""
         raise VideoModeUnsupported(f"{self.name} 不支持 video 模式")
@@ -79,7 +89,11 @@ def _frame_schema() -> dict[str, Any]:
 
 
 def _grasp_frame_schema() -> dict[str, Any]:
-    """逐帧、逐夹爪的抓取状态（支持单臂 / 双臂，按 side 区分各机械臂）。"""
+    """逐帧、逐夹爪的抓取状态（支持单臂 / 双臂，按 side 区分各机械臂）。
+
+    ``gripper_closed`` 为可选字段：regrasp（二次抓取）不要求它，object_slip（物体滑落）
+    用它区分「主动张开放下」与「夹爪仍闭合但物体没了（滑落）」。
+    """
     return {
         "type": "object",
         "properties": {
@@ -96,6 +110,7 @@ def _grasp_frame_schema() -> dict[str, Any]:
                                 "properties": {
                                     "side": {"type": "string"},
                                     "holding": {"type": "boolean"},
+                                    "gripper_closed": {"type": "boolean"},
                                     "object_label": {"type": "string"},
                                     "confidence": {"type": "number"},
                                 },
@@ -113,7 +128,10 @@ def _grasp_frame_schema() -> dict[str, Any]:
 
 
 def _parse_grasp(data: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
-    """返回 {frame_index: [{side, holding, object_label, confidence}, ...]}。"""
+    """返回 {frame_index: [{side, holding, gripper_closed, object_label, confidence}, ...]}。
+
+    ``gripper_closed`` 为 ``True`` / ``False`` / ``None``（模型未给出时为 None，slip 判定按未知处理）。
+    """
     out: dict[int, list[dict[str, Any]]] = {}
     for fv in data.get("frames", []):
         try:
@@ -122,13 +140,58 @@ def _parse_grasp(data: dict[str, Any]) -> dict[int, list[dict[str, Any]]]:
             continue
         grippers: list[dict[str, Any]] = []
         for g in fv.get("grippers", []) or []:
+            closed = g.get("gripper_closed")
             grippers.append({
                 "side": str(g.get("side", "") or "").strip().lower(),
                 "holding": bool(g.get("holding", False)),
+                "gripper_closed": None if closed is None else bool(closed),
                 "object_label": str(g.get("object_label", "") or "").strip(),
                 "confidence": float(g.get("confidence", 1.0) or 1.0),
             })
         out[idx] = grippers
+    return out
+
+
+def _colormatch_frame_schema() -> dict[str, Any]:
+    """逐帧「被操作物体与桌面是否同色难分辨」判定 schema（规范19）。"""
+    return {
+        "type": "object",
+        "properties": {
+            "frames": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "hard_to_distinguish": {"type": "boolean"},
+                        "object_label": {"type": "string"},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["index", "hard_to_distinguish"],
+                },
+            },
+            "notes": {"type": "string"},
+        },
+        "required": ["frames"],
+    }
+
+
+def _parse_colormatch(data: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """返回 {frame_index: {hard, object_label, confidence}}。
+
+    仅收录模型显式返回的帧；未返回的帧由上层按「该帧无可辨识的被操作物体」跳过。
+    """
+    out: dict[int, dict[str, Any]] = {}
+    for fv in data.get("frames", []):
+        try:
+            idx = int(fv["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out[idx] = {
+            "hard": bool(fv.get("hard_to_distinguish", False)),
+            "object_label": str(fv.get("object_label", "") or "").strip(),
+            "confidence": float(fv.get("confidence", 1.0) or 1.0),
+        }
     return out
 
 
@@ -197,6 +260,12 @@ class GeminiBackend(VisionBackend):
     ) -> dict[int, list[dict[str, Any]]]:
         data = self._gen_json(self._frame_contents(frames, prompt), _grasp_frame_schema())
         return _parse_grasp(data)
+
+    def classify_colormatch_frames(
+        self, frames: list[Frame], prompt: str
+    ) -> dict[int, dict[str, Any]]:
+        data = self._gen_json(self._frame_contents(frames, prompt), _colormatch_frame_schema())
+        return _parse_colormatch(data)
 
     def detect_video_intervals(self, video_path: str, prompt: str) -> list[Interval]:
         timeout = float(self.cfg.get("timeout", 120.0))
@@ -269,6 +338,14 @@ class OpenAIBackend(VisionBackend):
             self._frame_content(frames, prompt), _grasp_frame_schema(), "grasp_frames"
         )
         return _parse_grasp(data)
+
+    def classify_colormatch_frames(
+        self, frames: list[Frame], prompt: str
+    ) -> dict[int, dict[str, Any]]:
+        data = self._gen_json(
+            self._frame_content(frames, prompt), _colormatch_frame_schema(), "colormatch_frames"
+        )
+        return _parse_colormatch(data)
 
     # OpenAI 走 image 模式；video 模式沿用基类抛 VideoModeUnsupported。
 

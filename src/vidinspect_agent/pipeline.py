@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from vidinspect_agent.checkers import (
+    BrightnessChecker,
+    ColorMatchChecker,
     DupFrameChecker,
     EndpointStaticChecker,
     FreezeChecker,
@@ -12,6 +14,7 @@ from vidinspect_agent.checkers import (
     JumpChecker,
     MetadataChecker,
     NoiseChecker,
+    ObjectSlipChecker,
     RegraspChecker,
     StaticChecker,
     VisualChecker,
@@ -42,12 +45,21 @@ def _build_checkers(config: dict[str, Any]) -> list[BaseChecker]:
         checkers.append(FreezeChecker(config))
     if checks.get("noise", True):
         checkers.append(NoiseChecker(config))
+    # 画面过暗 / 欠曝（规范20子项），纯 CPU 亮度统计。
+    if checks.get("brightness", True):
+        checkers.append(BrightnessChecker(config))
     # 夹爪出境（规范12）走 Gemini 付费远程调用，默认关闭，需显式开启 + 配置 API key。
     if checks.get("gripper_offscreen", False):
         checkers.append(GripperOffscreenChecker(config))
     # 二次抓取（规范1）同样走付费多模态远程调用，默认关闭。
     if checks.get("regrasp", False):
         checkers.append(RegraspChecker(config))
+    # 物体滑落（规范21）同样走付费多模态远程调用，默认关闭。
+    if checks.get("object_slip", False):
+        checkers.append(ObjectSlipChecker(config))
+    # 操作物与桌面同色（规范19）同样走付费多模态远程调用，默认关闭。
+    if checks.get("colormatch", False):
+        checkers.append(ColorMatchChecker(config))
     return checkers
 
 

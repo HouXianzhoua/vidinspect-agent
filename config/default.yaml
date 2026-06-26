@@ -17,8 +17,11 @@ checks:
   endpoint_static: true   # 规范3：开始/结束归位停留时间长
   freeze: true            # 规范5：画面卡死（长时间卡帧）
   noise: true             # 规范11：严重噪点
+  brightness: true        # 规范20子项：画面过暗/欠曝
   gripper_offscreen: false  # 规范12：夹爪出境（Gemini 付费远程调用，默认关闭，需设 GEMINI_API_KEY 并开启）
   regrasp: false            # 规范1：二次抓取（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
+  object_slip: false        # 规范21：物体滑落（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
+  colormatch: false         # 规范19：操作物与桌面同色（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
 
 # 静态 / 无效操作检测（移植自 video_quality_pipeline static_arm）
 static:
@@ -96,6 +99,15 @@ noise:
   n_frames: 16          # 采样帧数
   max_h: 720            # 采样帧最大高度（过度下采样会削弱噪点，保留较高分辨率）
 
+# 画面过暗 / 欠曝检测（质检规范序号 20 子项：相机画面问题）
+# 只判"整体偏暗但非全黑"的欠曝画面；纯黑归 visual(blackdetect)，花屏归 integrity，
+# 偏色/白平衡误报率高暂不实现。全画面平均亮度中位数低于 min_luma 即命中。
+brightness:
+  severity: warn
+  min_luma: 40.0        # 全帧平均亮度(0-255)中位数低于此判为过暗/欠曝
+  n_frames: 16          # 采样帧数
+  max_h: 240            # 采样帧下采样高度
+
 # 夹爪出境检测（质检规范序号 12，多模态）
 # 注意：调用付费多模态 API，需安装依赖并设置对应 API key，同时把 checks.gripper_offscreen 设为 true。
 #   gemini: pip install -e ".[gemini]"  + 环境变量 GEMINI_API_KEY
@@ -137,6 +149,60 @@ regrasp:
   min_hold_sec: 0.5         # 一段"持有"至少持续这么久才算一次有效抓取（去抖，过滤误检；下限 2 帧）
   min_release_sec: 1.0      # 两次持有之间的"释放"至少持续这么久才算真释放（桥接遮挡闪断；下限 2 帧）
   min_confidence: 0.0       # 低于此置信度的"持有"判定按未持有处理（0=不启用）
+  temperature: 0.0
+  timeout: 120.0
+  gemini:
+    model: gemini-2.5-flash
+    api_key_env: GEMINI_API_KEY
+  openai:
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+
+# 物体滑落检测（质检规范序号 21，多模态）
+# 与 regrasp 共用架构，但判据不同（非其子集）：看「持有结束时夹爪是否仍闭合」。
+# 思路：本地抽帧 → 模型逐帧、逐夹爪回 {side, holding, gripper_closed, object_label, confidence}
+#   → 代码侧逐臂去抖后，对每个"持有段"末尾检查其后窗口内夹爪状态：仍闭合却已脱手 → 滑落；
+#   张开放下 → 正常。每只机械臂单目标，逐臂分别判定。判定确定可复现。
+# 注意：调用付费多模态 API，需安装对应后端依赖并设置 API key，同时把 checks.object_slip 设为 true。
+#   gemini: pip install -e ".[gemini]" + 环境变量 GEMINI_API_KEY
+#   openai: pip install -e ".[openai]" + 环境变量 OPENAI_API_KEY
+# 缺 key / SDK / 接口异常 / 抽帧失败时降级为 WARN，不阻塞流水线。
+object_slip:
+  severity: warn
+  provider: gemini          # gemini / openai（仅 image 逐帧模式）
+  sample_fps: 2.0           # 抽帧采样率（建议 >=2，决定持有/释放/滑落的时间分辨率）
+  frame_max_h: 360          # 抽帧下采样高度（省 token）
+  max_frames: 120           # 单视频抽帧上限（长视频自动降采样以覆盖全片）
+  min_hold_sec: 0.5         # 一段"持有"至少持续这么久才算有效抓取（去抖；下限 2 帧）
+  min_release_sec: 1.0      # 持有之间的"释放"至少这么久才算真脱手（桥接遮挡闪断；下限 2 帧）
+  release_window_sec: 0.5   # 持有结束后检查夹爪状态的窗口时长（下限 1 帧）
+  min_confidence: 0.0       # 低于此置信度的"持有"判定按未持有处理（0=不启用）
+  temperature: 0.0
+  timeout: 120.0
+  gemini:
+    model: gemini-2.5-flash
+    api_key_env: GEMINI_API_KEY
+  openai:
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
+
+# 操作物与桌面颜色相同检测（质检规范序号 19，多模态）
+# 静态属性（整段一个结论），无需时序状态机：本地少量抽帧 → 模型逐帧回
+#   {hard_to_distinguish, object_label, confidence} → 代码侧在能识别出被操作物体的帧里，
+#   "难分辨"帧占比 ≥ hit_ratio 即命中。因"难分辨"带主观性，命中默认 WARN（人工复核）。
+# 注意：调用付费多模态 API，需安装对应后端依赖并设置 API key，同时把 checks.colormatch 设为 true。
+#   gemini: pip install -e ".[gemini]" + 环境变量 GEMINI_API_KEY
+#   openai: pip install -e ".[openai]" + 环境变量 OPENAI_API_KEY
+# 缺 key / SDK / 接口异常 / 抽帧失败时降级为 WARN，不阻塞流水线。
+colormatch:
+  severity: warn            # 命中时的严重级别：warn / fail
+  provider: gemini          # gemini / openai（仅 image 逐帧模式）
+  sample_fps: 1.0           # 抽帧采样率（静态属性，低采样即可省成本）
+  frame_max_h: 360          # 抽帧下采样高度（省 token）
+  max_frames: 16            # 单视频抽帧上限（静态属性，少量均匀帧覆盖全片即可）
+  hit_ratio: 0.5            # 能识别物体的帧里"难分辨"占比 ≥ 此值即命中
+  min_judged_frames: 2      # 有效判定帧数下限，低于此报 WARN(无法评估)避免单帧误判
+  min_confidence: 0.0       # 低于此置信度的帧判定跳过(不计入)（0=不启用）
   temperature: 0.0
   timeout: 120.0
   gemini:
