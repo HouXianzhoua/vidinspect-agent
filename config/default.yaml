@@ -17,6 +17,8 @@ checks:
   endpoint_static: true   # 规范3：开始/结束归位停留时间长
   freeze: true            # 规范5：画面卡死（长时间卡帧）
   noise: true             # 规范11：严重噪点
+  gripper_offscreen: false  # 规范12：夹爪出境（Gemini 付费远程调用，默认关闭，需设 GEMINI_API_KEY 并开启）
+  regrasp: false            # 规范1：二次抓取（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
 
 # 静态 / 无效操作检测（移植自 video_quality_pipeline static_arm）
 static:
@@ -93,6 +95,56 @@ noise:
   max_noise_sigma: 8.0  # 噪声标准差(0-255)中位数超过此值即命中
   n_frames: 16          # 采样帧数
   max_h: 720            # 采样帧最大高度（过度下采样会削弱噪点，保留较高分辨率）
+
+# 夹爪出境检测（质检规范序号 12，多模态）
+# 注意：调用付费多模态 API，需安装依赖并设置对应 API key，同时把 checks.gripper_offscreen 设为 true。
+#   gemini: pip install -e ".[gemini]"  + 环境变量 GEMINI_API_KEY
+#   openai: pip install -e ".[openai]"  + 环境变量 OPENAI_API_KEY
+# 缺 key / SDK / 接口异常 / 后端不支持该模式时降级为 WARN，不阻塞流水线。
+gripper_offscreen:
+  severity: warn
+  mode: image               # image=本地抽帧逐帧判定（默认，1s 分辨率更稳、可跨厂商）；
+                            # video=整段视频交模型返回出镜区间（依赖原生视频理解，目前仅 gemini）
+  provider: gemini          # gemini / openai
+  sample_fps: 2.0           # image：抽帧采样率（决定 1s 阈值的时间分辨率，建议 >=2）
+  frame_max_h: 360          # image：抽帧下采样高度（省 token）
+  max_frames: 120           # image：单视频抽帧上限（长视频自动降采样以覆盖全片）
+  min_offscreen_sec: 1.0    # 夹爪连续出镜超过此秒数即命中
+  min_confidence: 0.5       # video：出镜区间置信度过滤阈值
+  temperature: 0.0
+  timeout: 120.0
+  gemini:
+    model: gemini-2.5-flash   # 也可用 gemini-3.5-flash 等多模态模型
+    api_key_env: GEMINI_API_KEY
+  openai:
+    model: gpt-4o             # 任意支持视觉的 OpenAI 多模态模型
+    api_key_env: OPENAI_API_KEY
+
+# 二次抓取检测（质检规范序号 1，多模态）
+# 思路：本地抽帧 → 模型逐帧、逐夹爪回 {side, holding, object_label, confidence} → 代码侧
+#   按机械臂(left/right/single)分别去抖后统计该臂的独立"持有段"数，某臂 ≥2 段(被真释放
+#   隔开)即判二次抓取。每只机械臂单目标，故双臂各抓一次(含 A→B 交接)正常、不误报。判定确定可复现。
+# 注意：调用付费多模态 API，需安装对应后端依赖并设置 API key，同时把 checks.regrasp 设为 true。
+#   gemini: pip install -e ".[gemini]" + 环境变量 GEMINI_API_KEY
+#   openai: pip install -e ".[openai]" + 环境变量 OPENAI_API_KEY
+# 缺 key / SDK / 接口异常 / 抽帧失败时降级为 WARN，不阻塞流水线。
+regrasp:
+  severity: warn
+  provider: gemini          # gemini / openai（仅 image 逐帧模式）
+  sample_fps: 2.0           # 抽帧采样率（建议 >=2，决定抓取/释放的时间分辨率）
+  frame_max_h: 360          # 抽帧下采样高度（省 token）
+  max_frames: 120           # 单视频抽帧上限（长视频自动降采样以覆盖全片）
+  min_hold_sec: 0.5         # 一段"持有"至少持续这么久才算一次有效抓取（去抖，过滤误检；下限 2 帧）
+  min_release_sec: 1.0      # 两次持有之间的"释放"至少持续这么久才算真释放（桥接遮挡闪断；下限 2 帧）
+  min_confidence: 0.0       # 低于此置信度的"持有"判定按未持有处理（0=不启用）
+  temperature: 0.0
+  timeout: 120.0
+  gemini:
+    model: gemini-2.5-flash
+    api_key_env: GEMINI_API_KEY
+  openai:
+    model: gpt-4o
+    api_key_env: OPENAI_API_KEY
 
 output:
   fail_on_error: true

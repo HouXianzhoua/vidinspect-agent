@@ -7,10 +7,12 @@ from vidinspect_agent.checkers import (
     DupFrameChecker,
     EndpointStaticChecker,
     FreezeChecker,
+    GripperOffscreenChecker,
     IntegrityChecker,
     JumpChecker,
     MetadataChecker,
     NoiseChecker,
+    RegraspChecker,
     StaticChecker,
     VisualChecker,
 )
@@ -40,6 +42,12 @@ def _build_checkers(config: dict[str, Any]) -> list[BaseChecker]:
         checkers.append(FreezeChecker(config))
     if checks.get("noise", True):
         checkers.append(NoiseChecker(config))
+    # 夹爪出境（规范12）走 Gemini 付费远程调用，默认关闭，需显式开启 + 配置 API key。
+    if checks.get("gripper_offscreen", False):
+        checkers.append(GripperOffscreenChecker(config))
+    # 二次抓取（规范1）同样走付费多模态远程调用，默认关闭。
+    if checks.get("regrasp", False):
+        checkers.append(RegraspChecker(config))
     return checkers
 
 

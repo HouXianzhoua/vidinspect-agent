@@ -16,6 +16,14 @@
   - `endpoint_static`：开始/结束归位停留时间过长（首尾静止 > 2s，自适应阈值）
   - `freeze`：画面卡死 / 长时间卡帧（单段最长冻结时长 > 2s）
   - `noise`：严重噪点（Immerkær 噪声方差估计）
+- **多模态检测器（默认关闭，可插拔后端）**：
+  - `gripper_offscreen`：夹爪出境（规范12）。`mode=image`（默认，本地抽帧→逐帧判定→代码算
+    最长连续出镜时长 >1s 命中）或 `mode=video`（整段视频交模型返回出镜区间，仅 gemini）；
+    `provider=gemini|openai` 可切换。需安装对应后端（`".[gemini]"` / `".[openai]"`）并设
+    `GEMINI_API_KEY` / `OPENAI_API_KEY`。
+  - `regrasp`：二次抓取（规范1）。本地抽帧→模型逐帧、逐夹爪判 `side`/`holding`→代码侧按
+    机械臂（left/right/single）分别去抖后统计该臂的独立「持有段」数，某臂 ≥2 段（被真释放隔开）
+    即命中。每只机械臂单目标，双臂各抓一次（含 A→B 交接）正常、不误报。`provider=gemini|openai` 可切换。
 - **Agent 编排**：可插拔 Checker 流水线，支持自定义规则与阈值
 - **报告输出**：JSON / 终端表格，便于接入 CI 或数据平台
 
@@ -38,6 +46,9 @@ vidinspect inspect /path/to/dataset --recursive --output report.json
 - Python 3.10+
 - [FFmpeg / FFprobe](https://ffmpeg.org/)（需在 PATH 中可用）
 - `numpy`、`opencv-python-headless`（时序质检 static / dup_frame / jump 使用）
+- `google-genai`（gemini 后端）或 `openai`（openai 后端）：`gripper_offscreen` 夹爪出境检测使用，
+  `pip install -e ".[gemini]"` 或 `".[openai]"`；需设置对应 `GEMINI_API_KEY` / `OPENAI_API_KEY`，
+  并在 `config` 把 `checks.gripper_offscreen` 设为 `true`
 - `torch`、`decord`、`easydict`（`static` 的 `raft` GPU 后端使用）
   - RAFT 后端还需 RAFT 源码（含 `core/raft.py`）与 `raft-sintel.pth` 权重；
     通过 `config` 的 `static.raft_repo` / `static.raft_model_path` 指定，或设置

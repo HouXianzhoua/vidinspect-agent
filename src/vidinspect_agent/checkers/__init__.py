@@ -1,10 +1,12 @@
 from vidinspect_agent.checkers.dup_frame import DupFrameChecker
 from vidinspect_agent.checkers.endpoint_static import EndpointStaticChecker
 from vidinspect_agent.checkers.freeze import FreezeChecker
+from vidinspect_agent.checkers.gripper_offscreen import GripperOffscreenChecker
 from vidinspect_agent.checkers.integrity import IntegrityChecker
 from vidinspect_agent.checkers.jump import JumpChecker
 from vidinspect_agent.checkers.metadata import MetadataChecker
 from vidinspect_agent.checkers.noise import NoiseChecker
+from vidinspect_agent.checkers.regrasp import RegraspChecker
 from vidinspect_agent.checkers.static import StaticChecker
 from vidinspect_agent.checkers.visual import VisualChecker
 
@@ -18,4 +20,6 @@ __all__ = [
     "EndpointStaticChecker",
     "FreezeChecker",
     "NoiseChecker",
+    "GripperOffscreenChecker",
+    "RegraspChecker",
 ]

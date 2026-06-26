@@ -72,6 +72,66 @@ def stream_gray_diffs(
     return np.asarray(diffs, dtype=np.float64), n, None
 
 
+def sample_frames_jpeg(
+    video_path: str,
+    sample_fps: float = 2.0,
+    max_h: int = 360,
+    max_frames: int = 120,
+    jpeg_q: int = 5,
+    timeout: float = 120.0,
+):
+    """按 ``sample_fps`` 均匀抽帧为 JPEG 字节，返回 ``(frames, err)``。
+
+    供需要把帧序列送多模态模型的检测器复用（如 gripper_offscreen）。用 ffmpeg 的
+    ``fps`` 滤镜抽帧到临时目录再读取，时间戳按采样率精确换算：第 ``i`` 帧（0 基）
+    覆盖时间窗 ``[i/sample_fps, (i+1)/sample_fps)``，连续 ``k`` 帧近似 ``k/sample_fps`` 秒。
+
+    - 成功：``frames`` 为 ``[(t_sec, jpeg_bytes), ...]``（按时间升序），``err=None``。
+    - 失败 / 超时 / 无帧：``frames=None``，``err`` 为简短错误标识。
+
+    不抛异常，便于上层优雅降级为 WARN。``max_frames`` 为安全上限（截断尾部）。
+    """
+    import tempfile
+
+    if sample_fps <= 0:
+        return None, f"bad_sample_fps={sample_fps}"
+    tmpdir = tempfile.mkdtemp(prefix="vidinspect_frames_")
+    try:
+        cmd = [
+            "ffmpeg", "-loglevel", "error", "-i", video_path,
+            "-vf", f"fps={sample_fps},scale=-2:{max_h}",
+            "-frames:v", str(max_frames), "-q:v", str(jpeg_q),
+            f"{tmpdir}/f_%05d.jpg",
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None, f"timeout>{timeout}s"
+        except Exception as exc:  # noqa: BLE001
+            return None, f"{type(exc).__name__}: {exc}"
+        if proc.returncode != 0:
+            err = (proc.stderr or b"").decode("utf-8", "replace")[:200]
+            return None, f"ffmpeg_rc={proc.returncode}: {err}"
+
+        import glob
+
+        paths = sorted(glob.glob(f"{tmpdir}/f_*.jpg"))
+        frames: list[tuple[float, bytes]] = []
+        for i, p in enumerate(paths):
+            try:
+                with open(p, "rb") as fh:
+                    frames.append((i / sample_fps, fh.read()))
+            except OSError:
+                continue
+        if not frames:
+            return None, "no_frames"
+        return frames, None
+    finally:
+        import shutil
+
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def probe_fps(video_path: str, timeout: float = 15.0) -> Optional[float]:
     """用 ffprobe 读取平均帧率（r_frame_rate）。失败返回 None。
 

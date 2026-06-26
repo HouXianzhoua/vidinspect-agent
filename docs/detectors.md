@@ -61,8 +61,9 @@ def check(self, path: Path, metadata: dict[str, Any]) -> list[CheckResult]:
 
 ### 1.4 装配开关
 
-`config["checks"]` 逐项控制是否启用，默认全开。装配顺序：
-`integrity → metadata → visual → static → dup_frame → jump → endpoint_static → freeze → noise`。
+`config["checks"]` 逐项控制是否启用。装配顺序：
+`integrity → metadata → visual → static → dup_frame → jump → endpoint_static → freeze → noise → gripper_offscreen`。
+除 `gripper_offscreen`（规范12，付费远程调用，**默认关闭**）外，其余默认全开。
 
 ### 1.5 优雅降级原则
 
@@ -282,6 +283,18 @@ problem = ratio_hit and magnitude_ok and universal_ok and isolation_ok
 
 - **降级**：视频打不开 → WARN；有效帧差 < 2 → PASS（帧数过少跳过）。
 
+#### 对规范序号 2.1（机械臂异常-卡顿）的覆盖
+
+规范序号 2.1「机械臂异常-卡顿」（序号 2「动作不流畅」的子类别）不单设检测器，由时序三件套联合覆盖，`jump` 为主判：
+
+| 卡顿表现 | 命中检测器 | 说明 |
+| --- | --- | --- |
+| 卡顿后机械臂"瞬间追位"的单点突跳 / 瞬移 | `jump` | 本检测器核心场景（`local_ratio_max` 局部尖峰 + 四重守卫） |
+| 周期性一顿一顿的微卡（多段短复制帧） | `dup_frame` | 规则 A `periodic_stutter` |
+| 单段长时间完全卡住 | `freeze` | 单段最长冻结时长 > 2s |
+
+> **边界**：`jump` 的 `universal_ok` 会**主动抑制持续 / 周期性运动**（`peak_high_run >= sustained_run` 即判定为持续运动而不报），故反复微抖须靠 `dup_frame` 兜底；且三件套均基于**全画面 mean|ΔY|**，当机械臂在大片静止背景中只占小块时帧差信号弱，可能漏判——这是算法层面的固有局限，非装配缺失。
+
 ---
 
 ## 3bis. 质检规范专项检测器（序号 3 / 5 / 11）
@@ -364,6 +377,118 @@ max_freeze_sec = longest_run(diff < freeze_thr) / fps
 
 ---
 
+## 3ter. 多模态检测器（序号 12）
+
+### 3ter.1 GripperOffscreenChecker（夹爪出境，规范序号 12）
+
+- **源文件**：`checkers/gripper_offscreen.py`、后端 `checkers/_vision.py`
+- **目标**：检出夹爪（机械臂末端执行器 / gripper）持续离开相机画面 **1s 以上**。
+- **为何走多模态**：「夹爪是否在画面内」是语义识别 + 跟踪问题，纯像素帧差 / 光流无法
+  稳健区分「夹爪移出画面」与「夹爪静止 / 被物体短暂遮挡」，故交给多模态模型。
+- **两个可插拔维度**（`config['gripper_offscreen']`）：
+  - `mode`：`image`（默认）/ `video`
+  - `provider`：`gemini` / `openai`（后端实现见 `_vision.py`，统一接口屏蔽 SDK 差异）
+
+#### image 模式（默认，感知交模型 / 判定留代码）
+
+```
+1. 本地抽帧：sample_frames_jpeg 按 sample_fps（默认 2）均匀抽帧为 JPEG（缩到 frame_max_h=360）；
+   长视频自适应降采样 eff_fps = min(sample_fps, max_frames/duration)，保证 ≤ max_frames（默认120）覆盖全片。
+2. 单次请求：把带 "Frame i:" 标号的图片序列 + 提示词发给所选 provider，结构化输出（JSON schema）
+   逐帧只回 {index, gripper_visible: bool}。
+3. 代码判定：offscreen = not gripper_visible；取最长连续出镜帧段 run，
+   max_offscreen_sec = run / eff_fps；> min_offscreen_sec（默认 1.0s）→ 命中（默认 WARN）。
+```
+
+- **为何 image 作默认**：判定阈值「连续 ≥1s」对时间分辨率敏感。video 模式下 Gemini 对
+  视频默认约 1fps 内部采样、时间戳偏粗，1s 踩在分辨率边界；自抽帧可把采样率定到 ≥2fps，
+  让 1s 稳定落到 2~3 帧，时长换算在代码侧确定可复现，且任何视觉模型（gemini/openai）都能跑。
+- **缺失帧兜底**：模型未返回的帧 index 一律按 `gripper_visible=True`（不可见才算出镜），避免过度误判。
+
+#### video 模式（整段视频，依赖原生视频理解）
+
+把整段视频交模型，直接返回出镜区间 `[(start_sec, end_sec, confidence)]`，代码按 `min_confidence`
+过滤后取最长区间时长与 `min_offscreen_sec` 比较。**目前仅 `gemini` 支持**（Files API 上传→轮询
+ACTIVE→结构化输出）；`openai` 后端会抛 `VideoModeUnsupported` → 降级 WARN 并提示改用 image。
+适用于帧常被遮挡 / 需时间上下文、或长视频逐帧 token 成本过高的场景。
+
+- **降级**：缺对应 API key / SDK 未安装 / 抽帧失败 / 接口异常 / 后端不支持该 mode → **WARN**，
+  不阻塞流水线。
+- **关键配置**（`config['gripper_offscreen']`）：
+
+| 参数 | 默认 | 含义 |
+| --- | --- | --- |
+| `mode` | `image` | `image` 逐帧 / `video` 区间 |
+| `provider` | `gemini` | `gemini` / `openai` |
+| `<provider>.model` | `gemini-2.5-flash` / `gpt-4o` | 各后端模型 |
+| `<provider>.api_key_env` | `GEMINI_API_KEY` / `OPENAI_API_KEY` | API key 环境变量名 |
+| `sample_fps` | 2.0 | image：抽帧采样率（1s 阈值的时间分辨率） |
+| `frame_max_h` | 360 | image：抽帧下采样高度（省 token） |
+| `max_frames` | 120 | image：单视频抽帧上限（长视频自动降采样） |
+| `min_offscreen_sec` | 1.0 | 连续出镜超过此秒数即命中 |
+| `min_confidence` | 0.5 | video：出镜区间置信度过滤 |
+| `severity` | warn | 命中级别（warn/fail） |
+
+> **启用方式**：`pip install -e ".[gemini]"`（或 `".[openai]"`）→ 设对应 API key →
+> 把 `config` 的 `checks.gripper_offscreen` 改为 `true`（默认 false，因属付费远程调用）。
+
+### 3ter.2 RegraspChecker（二次抓取，规范序号 1）
+
+- **源文件**：`checkers/regrasp.py`、后端 `checkers/_vision.py`
+- **目标**：检出视频中**多次抓取同一物体**（每次抓取应是单次且有效的）。
+- **为何走多模态 + 为何拆解**：整段视频直接问模型「是否发生二次抓取」做不出来——它要
+  同时干两件事：**逐帧感知**（谁在抓、抓的是什么）+ **跨时间推理**（判断「再次」）。
+  本检测器把它拆成 **逐帧感知交给模型 + 时序判定留给代码**，与 `gripper_offscreen`
+  的 image 模式同一套路，判定确定可复现。
+
+#### 流程（image 逐帧 + 代码侧逐臂状态机）
+
+```
+1. 本地抽帧：sample_frames_jpeg 按 sample_fps（默认 2）均匀抽帧为 JPEG（缩到 frame_max_h=360）；
+   长视频自适应降采样 eff_fps = min(sample_fps, max_frames/duration)，保证 ≤ max_frames（默认120）覆盖全片。
+2. 单次请求：把带 "Frame i:" 标号的图片序列 + 提示词发给所选 provider（gemini/openai），结构化输出
+   逐帧、逐夹爪回 {index, grippers:[{side, holding, object_label, confidence}]}。
+3. 归约：按夹爪 side（left/right/single）各建一条序列 seq_side[i]=该臂持有标签
+   （未持有 / 缺该夹爪条目 / 低于 min_confidence → None；持有但无标签 → 占位 __hold__）。
+4. 去抖（关键，压遮挡/误检噪声）：
+   - 丢弃长度 < min_hold_frames 的"持有"段（疑似单帧误检）；
+   - 桥接长度 < min_release_frames 的"释放"缝隙（遮挡闪断）。
+   两阈值由秒换算（min_hold_sec / min_release_sec × eff_fps），均下限 2 帧以滤掉单帧抖动。
+5. 逐臂计数判定：每只机械臂去抖后的独立"持有段"数，某臂 ≥2 段（被真释放隔开）→ 二次抓取（默认 WARN）。
+```
+
+#### 按机械臂判定（关键设计）
+
+数据约定**每只机械臂都是单目标**（可能单臂或双臂），故判定单位是**机械臂**而非全局：
+
+- 模型逐帧按画面左右标 `side`（`left` / `right`），单臂用 `single`；代码侧按 side 分别建序列。
+- **同一只臂**抓取 → 释放 → 再抓取（该臂持有段 ≥2）→ 命中。
+- **双臂各自抓取一次**，甚至 A 臂放下、B 臂接力（A→B 交接）→ 每臂各 1 段 → 正常，不误报。
+- 每只臂单目标，故臂内**忽略物体标签**只数持有段（`object_label` 仅留作复核展示）。
+
+#### 关键阈值
+
+| 参数 | 默认 | 含义 |
+| --- | --- | --- |
+| `sample_fps` | 2.0 | 抽帧采样率（抓取/释放时间分辨率） |
+| `min_hold_sec` | 0.5 | 持有段最短时长（去抖，下限 2 帧） |
+| `min_release_sec` | 1.0 | 真释放最短时长（桥接遮挡闪断，下限 2 帧） |
+| `min_confidence` | 0.0 | 低于此的"持有"按未持有处理（0=不启用） |
+| `max_frames` | 120 | 单视频抽帧上限（长视频自动降采样） |
+
+#### 已知局限
+
+- 夹爪仅**重新调整握姿**（未完全松开）属灰区，去抖与阈值都难拿稳。
+- 双臂时若模型把同一只臂的 `side` 在帧间左右互换，会把一段连续持有拆到两条序列，
+  可能误报/漏报；提示词已要求 side 全程一致，固定机位下通常稳定，仍属固有风险。
+- 物体小 / 与夹爪同色 / 桌面拥挤时逐帧"是否持有"会不准。故默认仅报 **WARN** 作人工复核提示。
+- **降级**：缺 API key / SDK / 抽帧失败 / 接口异常 → WARN，不阻塞流水线。
+
+> **启用方式**：`pip install -e ".[gemini]"`（或 `".[openai]"`）→ 设对应 API key →
+> 把 `config` 的 `checks.regrasp` 改为 `true`（默认 false，因属付费远程调用）。
+
+---
+
 ## 4. 检测器速查表
 
 | 检测器 | 默认级别 | 核心指标 | 依赖 | 失败 / 降级行为 |
@@ -377,6 +502,8 @@ max_freeze_sec = longest_run(diff < freeze_thr) / fps
 | endpoint_static | WARN | 首/尾连续静止时长（自适应阈值） | ffmpeg + numpy | 缺 fps / 超时 → WARN |
 | freeze | WARN | 单段最长冻结时长 | ffmpeg + numpy | 缺 fps / 超时 → WARN |
 | noise | WARN | Immerkær 噪声 sigma 中位数 | OpenCV + numpy | 缺 OpenCV / 读帧失败 → WARN |
+| gripper_offscreen | WARN（默认关闭） | 最长连续出镜时长（image 逐帧 visible / video 区间） | ffmpeg + google-genai 或 openai + 网络 | 缺 key/SDK、抽帧/接口异常、mode 不支持 → WARN |
+| regrasp | WARN（默认关闭） | 同一物体去抖后的持有段数（≥2 即二次抓取） | ffmpeg + google-genai 或 openai + 网络 | 缺 key/SDK、抽帧/接口异常 → WARN |
 
 ---
 

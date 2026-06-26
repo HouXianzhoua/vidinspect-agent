@@ -26,6 +26,13 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.4",
 ]
+# 规范12 夹爪出境检测（多模态后端）；未安装对应 SDK 时该检测器降级为 WARN。
+gemini = [
+    "google-genai>=1.0",
+]
+openai = [
+    "openai>=1.40",
+]
 
 [project.scripts]
 vidinspect = "vidinspect_agent.cli:main"
