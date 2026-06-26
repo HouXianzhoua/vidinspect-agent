@@ -9,6 +9,7 @@ from vidinspect_agent.checkers.jump import JumpChecker
 from vidinspect_agent.checkers.metadata import MetadataChecker
 from vidinspect_agent.checkers.noise import NoiseChecker
 from vidinspect_agent.checkers.object_slip import ObjectSlipChecker
+from vidinspect_agent.checkers.occlusion import OcclusionChecker
 from vidinspect_agent.checkers.regrasp import RegraspChecker
 from vidinspect_agent.checkers.static import StaticChecker
 from vidinspect_agent.checkers.visual import VisualChecker
@@ -28,4 +29,5 @@ __all__ = [
     "RegraspChecker",
     "ObjectSlipChecker",
     "ColorMatchChecker",
+    "OcclusionChecker",
 ]

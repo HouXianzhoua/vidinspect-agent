@@ -79,6 +79,7 @@ def sample_frames_jpeg(
     max_frames: int = 120,
     jpeg_q: int = 5,
     timeout: float = 120.0,
+    duration_sec: float | None = None,
 ):
     """按 ``sample_fps`` 均匀抽帧为 JPEG 字节，返回 ``(frames, err)``。
 
@@ -90,6 +91,8 @@ def sample_frames_jpeg(
     - 失败 / 超时 / 无帧：``frames=None``，``err`` 为简短错误标识。
 
     不抛异常，便于上层优雅降级为 WARN。``max_frames`` 为安全上限（截断尾部）。
+    ``duration_sec`` 非空时只抽取视频**开头这一段时长**（ffmpeg ``-t``），供只关心
+    视频首段（如「首帧遮挡」规范15）的检测器省成本、避免抽到无关后段。
     """
     import tempfile
 
@@ -97,8 +100,10 @@ def sample_frames_jpeg(
         return None, f"bad_sample_fps={sample_fps}"
     tmpdir = tempfile.mkdtemp(prefix="vidinspect_frames_")
     try:
-        cmd = [
-            "ffmpeg", "-loglevel", "error", "-i", video_path,
+        cmd = ["ffmpeg", "-loglevel", "error", "-i", video_path]
+        if duration_sec is not None and duration_sec > 0:
+            cmd += ["-t", str(duration_sec)]
+        cmd += [
             "-vf", f"fps={sample_fps},scale=-2:{max_h}",
             "-frames:v", str(max_frames), "-q:v", str(jpeg_q),
             f"{tmpdir}/f_%05d.jpg",

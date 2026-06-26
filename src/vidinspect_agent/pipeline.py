@@ -15,6 +15,7 @@ from vidinspect_agent.checkers import (
     MetadataChecker,
     NoiseChecker,
     ObjectSlipChecker,
+    OcclusionChecker,
     RegraspChecker,
     StaticChecker,
     VisualChecker,
@@ -60,6 +61,9 @@ def _build_checkers(config: dict[str, Any]) -> list[BaseChecker]:
     # 操作物与桌面同色（规范19）同样走付费多模态远程调用，默认关闭。
     if checks.get("colormatch", False):
         checkers.append(ColorMatchChecker(config))
+    # 首帧夹爪遮挡操作物品（规范15）同样走付费多模态远程调用，默认关闭。
+    if checks.get("occlusion", False):
+        checkers.append(OcclusionChecker(config))
     return checkers
 
 
