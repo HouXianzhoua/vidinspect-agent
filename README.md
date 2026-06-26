@@ -31,6 +31,15 @@
   - `colormatch`：操作物与桌面同色（规范19）。静态属性、无需时序——本地少量抽帧→模型逐帧判
     「被操作物体是否与桌面颜色相近、难分辨位置和大小」→代码侧在可识别物体的帧里按「难分辨」
     占比 ≥ 阈值判定。`provider=gemini|openai` 可切换。
+- **LeRobot 信号交叉验证（§3 小优化，自动生效、无 LeRobot 数据则降级）**：当视频位于 LeRobot
+  组内时，摄入层注入的真实信号会增强上述检测器——
+  - `metadata`：新增 `spec_match`，把 `info.json` 声明的 codec/分辨率/fps/pix_fmt/has_audio 与 ffprobe 实测交叉核对；
+  - `dup_frame`：fps 归一化优先用 `info.json` 声明帧率（更权威）；
+  - `endpoint_static`：用 puppet 关节首尾静止时长（地面真值）替代脆弱的像素自适应阈值，并标注末尾「归位」子任务；
+  - `freeze`：腕部相机画面冻结但对应臂关节在动 → 判画面/关节不一致（规范18）；
+  - `brightness`：用 `stats.json` 像素均值作每数据源亮度基线，替代写死阈值 40；
+  - `jump`：`robot` 阈值表经摄入层自动按机型生效，另有可选的关节跳变交叉验证（默认关闭）。
+  逐帧关节读取需 `pyarrow`（`pip install -e ".[lerobot]"`）；缺数据 / 缺依赖一律退回纯像素行为。
 - **Agent 编排**：可插拔 Checker 流水线，支持自定义规则与阈值
 - **报告输出**：JSON / 终端表格，便于接入 CI 或数据平台
 

@@ -31,6 +31,14 @@ checks:
   object_slip: false        # 规范21：物体滑落（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
   colormatch: false         # 规范19：操作物与桌面同色（多模态付费远程调用，默认关闭，需设对应 API key 并开启）
 
+# 元数据检查（分辨率 / 帧率 / 时长 + 声明 vs 实测交叉核对）
+metadata:
+  # 「声明 vs 实测」（§3）：LeRobot info.json 声明的 codec/分辨率/fps/pix_fmt/has_audio
+  # 与 ffprobe 实测交叉核对。仅在 LeRobot 组内（有声明值）时产生 spec_match 项；纯 mp4 跳过。
+  spec_match: true
+  spec_match_severity: warn   # 声明与实测不一致时的严重级别：warn / fail
+  fps_tol: 1.0                # fps 允许的数值偏差（声明 30 实测 29.97 不算不一致）
+
 # 静态 / 无效操作检测（移植自 video_quality_pipeline static_arm）
 static:
   severity: warn        # 命中时的严重级别：warn / fail
@@ -68,6 +76,7 @@ dup_frame:
   mean_gap_cap: 16.0
   downscale: [64, 48]
   timeout: 60.0
+  prefer_declared_fps: true  # §3：fps 归一化优先用 info.json 声明帧率（更权威），缺省退回实测
 
 # 跳帧 / 瞬移检测（移植自 video_quality_pipeline jump_frame）
 jump:
@@ -81,6 +90,10 @@ jump:
   isolation_min: 2.5
   high_run_max: 1
   static_bg_max: 0.6
+  # §3 可选关节交叉验证（默认关闭）：像素峰值帧处关节也跳变才确认，抑制编码/光照伪跳变。
+  # 需 §1 摄入层提供 parquet 指针（LeRobot 组内）。robot 阈值表已由摄入层填 robot 自动生效。
+  joint_cross_validate: false
+  joint_ratio_min: 3.0  # 峰值帧关节速度 / 速度中位数 的下限（低于此视为关节无跳变）
   thresholds:
     __default__: 4.0    # 无机器人标签时使用
 
@@ -93,6 +106,10 @@ endpoint_static:
   rel_frac: 0.35        # 相对该视频运动区间(p10~p90)的比例
   downscale: [64, 48]   # ffmpeg 下采样尺寸
   timeout: 60.0
+  # §3：有 LeRobot 关节数据时以关节首尾静止时长为准（关节是归位静止的地面真值，绕开
+  # 64×48 像素自适应阈值的脆弱性）；缺关节时退回像素。末尾「归位」子任务段记入 details。
+  joint_cross_validate: true
+  joint_move_speed: 0.005  # rad/帧：关节速度低于此视为「几乎不动」
 
 # 画面卡死 / 长时间卡帧检测（质检规范序号 5）
 freeze:
@@ -101,6 +118,10 @@ freeze:
   max_freeze_sec: 2.0   # 单段最长连续冻结超过此秒数即命中
   downscale: [64, 48]
   timeout: 60.0
+  # §3：腕部相机(camera_left/right)随对应臂运动，画面冻结但该臂关节在动 → 画面/关节不一致
+  #（规范18）。有 LeRobot 关节时据此区分「真冻结」与「画面不一致」，记入 details 并细化命中文案。
+  joint_cross_validate: true
+  joint_move_speed: 0.005  # rad/帧：关节速度高于此视为「在动」
 
 # 注：质检规范序号 6（画面掉帧 / 多段短时卡帧 / 慢放）已由 dup_frame 覆盖
 #（规则 A periodic_stutter + 规则 B 时间变慢），无需单独检测器。
@@ -117,9 +138,13 @@ noise:
 # 偏色/白平衡误报率高暂不实现。全画面平均亮度中位数低于 min_luma 即命中。
 brightness:
   severity: warn
-  min_luma: 40.0        # 全帧平均亮度(0-255)中位数低于此判为过暗/欠曝
+  min_luma: 40.0        # 全帧平均亮度(0-255)中位数下限（无 stats 基线时的固定阈值，也是 fallback）
   n_frames: 16          # 采样帧数
   max_h: 240            # 采样帧下采样高度
+  # §3：有 stats.json 时用该数据源的像素均值作基线，阈值=baseline*baseline_rel_frac，
+  # 替代写死的 40（不同数据源/机位正常亮度差异大）。缺 stats 基线时退回固定 min_luma。
+  use_stats_baseline: true
+  baseline_rel_frac: 0.4
 
 # 夹爪出境检测（质检规范序号 12，多模态）
 # 注意：调用付费多模态 API，需安装依赖并设置对应 API key，同时把 checks.gripper_offscreen 设为 true。

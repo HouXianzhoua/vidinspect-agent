@@ -26,6 +26,13 @@ from typing import Any
 import numpy as np
 
 from vidinspect_agent.checkers._frames import probe_fps, stream_gray_diffs
+from vidinspect_agent.checkers._joints import (
+    arm_joints_for,
+    camera_side,
+    is_wrist_camera,
+    joint_moving_in_fraction,
+    per_frame_speed,
+)
 from vidinspect_agent.checkers.base import BaseChecker
 from vidinspect_agent.models import CheckResult, Severity
 
@@ -41,6 +48,8 @@ class FreezeChecker(BaseChecker):
         max_freeze_sec_thr = cfg.get("max_freeze_sec", 2.0)
         downscale = tuple(cfg.get("downscale", (64, 48)))
         timeout = cfg.get("timeout", 60.0)
+        joint_cross = cfg.get("joint_cross_validate", True)
+        joint_move_speed = cfg.get("joint_move_speed", 0.005)
         fail_severity = _severity(cfg.get("severity", "warn"))
 
         fps = metadata.get("fps") or probe_fps(str(path))
@@ -57,6 +66,22 @@ class FreezeChecker(BaseChecker):
         max_freeze_sec = max_run / fps
         freeze_ratio = float(frozen.mean())
 
+        # 关节交叉验证（规范18）：腕部相机（camera_left/right）随对应臂运动，画面冻结时
+        # 若对应臂关节仍在动 → 画面与关节不一致（采集/编码异常），而非合理的整体静止。
+        camera_key = (metadata.get("lerobot") or {}).get("camera_key") \
+            if isinstance(metadata.get("lerobot"), dict) else None
+        wrist = is_wrist_camera(camera_key)
+        joint_moving_during = None
+        if joint_cross and max_run > 0:
+            arms = arm_joints_for(path, metadata)
+            speed = per_frame_speed(arms, side=camera_side(camera_key)) if arms else None
+            if speed is not None:
+                denom = max(n - 1, 1)
+                joint_moving_during = joint_moving_in_fraction(
+                    speed, run_start / denom, (run_start + max_run) / denom, joint_move_speed
+                )
+
+        inconsistent = bool(wrist and joint_moving_during)
         score = float(np.clip(1.0 - max_freeze_sec / max_freeze_sec_thr, 0.0, 1.0))
         details = {
             "score": round(score, 4),
@@ -66,19 +91,30 @@ class FreezeChecker(BaseChecker):
             "freeze_ratio": round(freeze_ratio, 4),
             "max_freeze_sec_thr": max_freeze_sec_thr,
             "freeze_thr": freeze_thr,
+            "camera_side": camera_side(camera_key),
+            "wrist_camera": wrist,
+            "joint_moving_during_freeze": joint_moving_during,
+            "frame_joint_inconsistent": inconsistent,
             "fps": round(float(fps), 3),
             "total_frames": n,
         }
 
         if max_freeze_sec > max_freeze_sec_thr:
+            if inconsistent:
+                message = (
+                    f"疑似画面与关节不一致(规范18): 最长卡帧 {max_freeze_sec:.1f}s "
+                    f"(上限 {max_freeze_sec_thr:.1f}s)，期间对应臂关节仍在运动"
+                )
+            else:
+                message = (
+                    f"疑似画面卡死: 最长卡帧 {max_freeze_sec:.1f}s "
+                    f"(上限 {max_freeze_sec_thr:.1f}s)"
+                )
             return [
                 CheckResult(
                     name="freeze",
                     severity=fail_severity,
-                    message=(
-                        f"疑似画面卡死: 最长卡帧 {max_freeze_sec:.1f}s "
-                        f"(上限 {max_freeze_sec_thr:.1f}s)"
-                    ),
+                    message=message,
                     details=details,
                 )
             ]

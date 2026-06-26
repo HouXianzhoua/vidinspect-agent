@@ -23,6 +23,7 @@ from typing import Any
 
 import numpy as np
 
+from vidinspect_agent.checkers._joints import arm_joints_for, per_frame_speed
 from vidinspect_agent.checkers.base import BaseChecker
 from vidinspect_agent.models import CheckResult, Severity
 
@@ -65,6 +66,8 @@ class JumpChecker(BaseChecker):
         isolation_min = cfg.get("isolation_min", 2.5)
         high_run_max = cfg.get("high_run_max", 1)
         static_bg_max = cfg.get("static_bg_max", 0.6)
+        joint_cross = cfg.get("joint_cross_validate", False)
+        joint_ratio_min = cfg.get("joint_ratio_min", 3.0)
         fail_severity = _severity(cfg.get("severity", "warn"))
 
         cap = cv2.VideoCapture(str(path))
@@ -157,6 +160,21 @@ class JumpChecker(BaseChecker):
             isolation_ok = (not apply_iso) or isolated_spike
 
         problem = bool(ratio_hit and magnitude_ok and universal_ok and isolation_ok)
+
+        # 可选关节交叉验证（默认关闭）：像素峰值帧处若关节也有对应跳变 → 确认；关节平稳
+        # 却报像素跳变，多为编码/光照伪跳变 → 抑制误报。需 §1 摄入层 parquet 指针。
+        joint_peak_ratio = None
+        if joint_cross:
+            arms = arm_joints_for(path, metadata)
+            speed = per_frame_speed(arms) if arms else None
+            if speed is not None and speed.size:
+                j_idx = int(round((local_idx / max(n - 1, 1)) * (speed.size - 1)))
+                j_idx = min(max(j_idx, 0), speed.size - 1)
+                med = float(np.median(speed)) + 1e-8
+                joint_peak_ratio = float(speed[j_idx] / med)
+                if problem and joint_peak_ratio < joint_ratio_min:
+                    problem = False
+
         details = {
             "score": round(score, 4),
             "local_ratio_max": round(float(local_max), 2),
@@ -170,6 +188,7 @@ class JumpChecker(BaseChecker):
             "magnitude_ok": bool(magnitude_ok),
             "universal_ok": bool(universal_ok),
             "isolation_ok": bool(isolation_ok),
+            "joint_peak_ratio": round(joint_peak_ratio, 3) if joint_peak_ratio is not None else None,
             "total_frames": total_frames,
             "thr": thr,
             "robot": robot,

@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | 前置枢纽改造（摄入 / 编排层） | 1 | 数据摄入层（非检测器，但是一切增益的前提） |
 | 检测器需**大变更** | 3 | `static`、`regrasp`、`object_slip` |
-| 检测器可**小优化** | 6 | `metadata`、`jump`、`dup_frame`、`endpoint_static`、`freeze`、`brightness` |
+| 检测器可**小优化** ✅ 已实现 | 6 | `metadata`、`jump`、`dup_frame`、`endpoint_static`、`freeze`、`brightness` |
 | 检测器**不用变** | 5 | `integrity`、`visual`、`noise`、`colormatch`、`gripper_offscreen` |
 
 **一句话**：真正的「大变更」在**数据摄入 / 编排层**，不是某个检测器；它一旦落地，多数检测器
@@ -102,18 +102,45 @@
 
 ---
 
-## 3. 可小优化的检测器（6）
+## 3. 可小优化的检测器（6）✅ 已实现
 
 像素侧核心逻辑保留，叠加新数据作为更权威输入或交叉验证。
 
-| 检测器 | 当前实现 | 小优化内容 |
-| --- | --- | --- |
-| `metadata` | ffprobe 读规格 → 阈值比较 | 增加「声明 vs 实测」：`info.json` 的 codec / 分辨率 / fps / pix_fmt / has_audio 与 ffprobe 实测交叉核对 |
-| `jump` | 像素局部峰值 + 四重守卫，按 `robot` 查阈值表 | 摄入层填 `metadata["robot"]=robot_type`，阈值表才真正生效（现恒落 `__default__=4.0`，等于没分机型）；可选用关节跳变交叉验证 |
-| `dup_frame` | 像素复制帧比例 + fps 归一化 | fps 归一化改用 `info.json` 声明帧率（更权威；全量 29/30/28 因组而异）；时间戳连续性另起新检查 |
-| `endpoint_static` | 像素首 / 尾连续静止 + 自适应阈值 | 用关节速度≈0 或 `labels` 的「归位」子任务段交叉验证首尾停留，减少对 64×48 像素自适应阈值的脆弱依赖 |
-| `freeze` | 像素单段最长冻结时长 | 与关节运动交叉判别：腕部相机（`camera_left/right`）随臂运动，画面冻结但关节在动 → 真冻结 / 画面不一致（顺带覆盖规范 18） |
-| `brightness` | 像素平均亮度中位数 vs 固定阈值 40 | 用 `stats.json` 像素均值作每数据源基线，替代写死阈值（亦可按组标定） |
+| 检测器 | 当前实现 | 小优化内容 | 状态 |
+| --- | --- | --- | --- |
+| `metadata` | ffprobe 读规格 → 阈值比较 | 增加「声明 vs 实测」：`info.json` 的 codec / 分辨率 / fps / pix_fmt / has_audio 与 ffprobe 实测交叉核对 | ✅ |
+| `jump` | 像素局部峰值 + 四重守卫，按 `robot` 查阈值表 | 摄入层填 `metadata["robot"]=robot_type`，阈值表才真正生效（现恒落 `__default__=4.0`，等于没分机型）；可选用关节跳变交叉验证 | ✅ |
+| `dup_frame` | 像素复制帧比例 + fps 归一化 | fps 归一化改用 `info.json` 声明帧率（更权威；全量 29/30/28 因组而异）；时间戳连续性另起新检查 | ✅（fps 部分；时间戳连续性见 §5） |
+| `endpoint_static` | 像素首 / 尾连续静止 + 自适应阈值 | 用关节速度≈0 或 `labels` 的「归位」子任务段交叉验证首尾停留，减少对 64×48 像素自适应阈值的脆弱依赖 | ✅ |
+| `freeze` | 像素单段最长冻结时长 | 与关节运动交叉判别：腕部相机（`camera_left/right`）随臂运动，画面冻结但关节在动 → 真冻结 / 画面不一致（顺带覆盖规范 18） | ✅ |
+| `brightness` | 像素平均亮度中位数 vs 固定阈值 40 | 用 `stats.json` 像素均值作每数据源基线，替代写死阈值（亦可按组标定） | ✅ |
+
+**落地说明**（全部对非 LeRobot 视频 / 缺 parquet / 缺 pyarrow **优雅降级**回原纯像素行为，
+并把信号来源写入 `details` 供复核；新增 `checkers/_joints.py` 作为关节运动量共享 helper，
+复用 §1/§2 已有的 parquet 读取）：
+
+- **摄入层补充注入**（`lerobot.py`，均为 JSON 可序列化、附加键）：从 `stats.json` 取每相机
+  像素均值注入 `metadata["lerobot"]["pixel_luma_baseline"]`（0–255）、把含帧区间的子任务
+  注入 `metadata["lerobot"]["subtasks"]`；`pipeline._extract_metadata` 增补 `pix_fmt` / `has_audio` 实测值。
+- `metadata`：新增 `spec_match` 结果项，比对声明视频规格与 ffprobe 实测（fps 容差 `fps_tol`，
+  默认 1.0；不一致默认 WARN）。纯视频无声明值 → 不产生该项。配置 `metadata.spec_match`。
+- `jump`：`robot` 已由 §1 摄入层自动填入，阈值表按机型生效（无需改判定逻辑）。新增**可选**
+  关节交叉验证（`jump.joint_cross_validate`，默认关闭）：像素峰值帧处关节也跳变才确认，
+  抑制编码 / 光照伪跳变；`details.joint_peak_ratio` 记录峰值帧关节速度 / 中位数之比。
+- `dup_frame`：fps 归一化优先用 `info.json` 声明帧率（`dup_frame.prefer_declared_fps`，默认 true），
+  `details.fps_source ∈ {declared, measured, probed}`。
+- `endpoint_static`：有关节数据时以**关节首尾静止时长**为准（关节是归位静止的地面真值），
+  绕开 64×48 像素自适应阈值的脆弱性；末尾「归位 / 复位」子任务段记入 `details.trailing_homing_subtask`。
+  配置 `endpoint_static.joint_cross_validate` / `joint_move_speed`，像素值仍保留在 `details` 对照。
+- `freeze`：腕部相机（`camera_left/right`）画面冻结但对应臂关节在动 → `details.frame_joint_inconsistent=true`
+  并细化命中文案为「画面与关节不一致（规范 18）」；俯视 / 头部固定机位用整体关节运动。
+  配置 `freeze.joint_cross_validate` / `joint_move_speed`。
+- `brightness`：有 `stats.json` 基线时阈值 = `baseline × baseline_rel_frac`（默认 0.4）替代写死的 40，
+  `details.threshold_source ∈ {stats_baseline, fixed}`。配置 `brightness.use_stats_baseline` / `baseline_rel_frac`。
+
+> 真机验证：在真实组（`tienyi_prod2_dualArm-dexHand`，1280×720/h264/29fps）上跑通——`spec_match`
+> 声明=实测、`dup_frame` 用声明 29fps、`endpoint_static` 走关节信号、`freeze` 识别 `camera_left`
+> 为腕部相机、`brightness` 用 stats 基线（106.4 → 阈值 42.55）、`jump` 关节峰值比 23.2。
 
 ---
 
@@ -150,7 +177,8 @@
 
 ## 6. 落地顺序建议
 
-1. **摄入 / 编排层枢纽改造**（解锁一切，见 §1）。
-2. 接上 `jump.robot` 与 `colormatch` 的 task/target_objects 钩子（**零检测逻辑改动即生效**）。
+1. ✅ **摄入 / 编排层枢纽改造**（解锁一切，见 §1）。
+2. ✅ 接上 `jump.robot` 与 `colormatch` 的 task/target_objects 钩子（**零检测逻辑改动即生效**）。
 3. 加几条「低成本高价值」新检查：三方帧数一致性、schema 校验、时间戳 / 采样率（见 §5）。
-4. 给 `static` 加关节后端；用 parquet 夹爪信号重做 `regrasp` / `object_slip`（见 §2）。
+4. ✅ 给 `static` 加关节后端；用 parquet 夹爪信号重做 `regrasp` / `object_slip`（见 §2）。
+5. ✅ 6 个检测器小优化（声明 vs 实测 / 声明 fps / 关节首尾静止 / 画面-关节一致性 / stats 亮度基线，见 §3）。

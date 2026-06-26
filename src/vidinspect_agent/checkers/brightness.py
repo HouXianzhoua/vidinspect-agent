@@ -43,7 +43,18 @@ class BrightnessChecker(BaseChecker):
         min_luma = float(cfg.get("min_luma", 40.0))
         n_frames = int(cfg.get("n_frames", 16))
         max_h = int(cfg.get("max_h", 240))
+        use_baseline = cfg.get("use_stats_baseline", True)
+        baseline_rel_frac = float(cfg.get("baseline_rel_frac", 0.4))
         fail_severity = _severity(cfg.get("severity", "warn"))
+
+        # 每数据源亮度基线：用 stats.json 像素均值（§1 注入）按比例定阈值，替代写死的 40。
+        # 不同数据源 / 机位的正常亮度分布差异大，固定阈值要么误报要么漏报。缺基线时退回固定值。
+        baseline = _pixel_luma_baseline(metadata) if use_baseline else None
+        min_luma_eff = min_luma
+        threshold_source = "fixed"
+        if baseline is not None and baseline > 0:
+            min_luma_eff = baseline * baseline_rel_frac
+            threshold_source = "stats_baseline"
 
         try:
             import cv2  # noqa: F401  (确认依赖存在)
@@ -55,14 +66,17 @@ class BrightnessChecker(BaseChecker):
             return [self._warn("无法采样帧用于过暗检测", {"error": "read_failed"})]
 
         luma_per_frame = [float(fr.mean()) for fr in gray]
-        stats = evaluate_brightness(luma_per_frame, min_luma)
+        stats = evaluate_brightness(luma_per_frame, min_luma_eff)
 
         details = {
             "score": round(stats["score"], 4),
             "luma_median": round(stats["luma_median"], 3),
             "luma_mean": round(stats["luma_mean"], 3),
             "luma_min": round(stats["luma_min"], 3),
-            "min_luma": min_luma,
+            "min_luma": round(min_luma_eff, 3),
+            "min_luma_base": min_luma,
+            "threshold_source": threshold_source,
+            "pixel_luma_baseline": round(baseline, 3) if baseline is not None else None,
             "frames_used": len(luma_per_frame),
         }
 
@@ -73,7 +87,7 @@ class BrightnessChecker(BaseChecker):
                     severity=fail_severity,
                     message=(
                         f"疑似画面过暗/欠曝: 平均亮度={stats['luma_median']:.1f} "
-                        f"(下限 {min_luma:.1f})"
+                        f"(下限 {min_luma_eff:.1f})"
                     ),
                     details=details,
                 )
@@ -95,6 +109,18 @@ class BrightnessChecker(BaseChecker):
             message=msg,
             details=details,
         )
+
+
+def _pixel_luma_baseline(metadata: dict[str, Any]) -> float | None:
+    """从 §1 摄入层注入的 ``metadata["lerobot"]["pixel_luma_baseline"]`` 取像素亮度基线。"""
+    lr = metadata.get("lerobot")
+    if not isinstance(lr, dict):
+        return None
+    value = lr.get("pixel_luma_baseline")
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def evaluate_brightness(luma_per_frame, min_luma: float = 40.0) -> dict[str, Any]:

@@ -48,9 +48,17 @@ class DupFrameChecker(BaseChecker):
         mean_gap_cap = cfg.get("mean_gap_cap", 16.0)
         downscale = tuple(cfg.get("downscale", (64, 48)))
         timeout = cfg.get("timeout", 60.0)
+        prefer_declared_fps = cfg.get("prefer_declared_fps", True)
         fail_severity = _severity(cfg.get("severity", "warn"))
 
-        fps = metadata.get("fps") or probe_fps(str(path))
+        # fps 用于把 20fps 上标定的阈值做归一化。优先用 info.json 声明帧率（更权威；
+        # 全量 29/30/28 因组而异），缺声明时退回 ffprobe 实测 / 探测。
+        declared_fps = _declared_fps(metadata) if prefer_declared_fps else None
+        fps = declared_fps or metadata.get("fps") or probe_fps(str(path))
+        fps_source = (
+            "declared" if declared_fps
+            else ("measured" if metadata.get("fps") else "probed")
+        )
         norm = (fps / fps_ref) if (fps and fps > 0 and fps_ref > 0) else 1.0
 
         W, H = downscale
@@ -155,6 +163,7 @@ class DupFrameChecker(BaseChecker):
             "long_gap_ratio": round(long_gap_ratio, 4),
             "total_frames": n,
             "fps": round(fps, 3) if fps else None,
+            "fps_source": fps_source,
             "fps_norm": round(norm, 3),
         }
         if problem:
@@ -186,6 +195,22 @@ class DupFrameChecker(BaseChecker):
             message=f"复制帧检测未完成: {msg}",
             details={"error": msg},
         )
+
+
+def _declared_fps(metadata: dict[str, Any]) -> float | None:
+    """从 §1 摄入层注入的 LeRobot 上下文取 info.json 声明帧率；缺省返回 ``None``。"""
+    lr = metadata.get("lerobot")
+    if not isinstance(lr, dict):
+        return None
+    declared = lr.get("declared_video")
+    fps = declared.get("fps") if isinstance(declared, dict) else None
+    if fps is None:
+        fps = lr.get("declared_fps")
+    try:
+        fps = float(fps) if fps is not None else None
+    except (TypeError, ValueError):
+        return None
+    return fps if (fps and fps > 0) else None
 
 
 def _severity(value: str) -> Severity:

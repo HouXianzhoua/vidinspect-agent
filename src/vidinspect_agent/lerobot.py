@@ -132,6 +132,39 @@ def _calibration_present(info: dict[str, Any]) -> bool:
     return False
 
 
+def _iter_numbers(obj: Any):
+    """递归展开任意嵌套数组里的有限数值（stats.json 的 mean 常为 [3,1,1] 嵌套）。"""
+    if isinstance(obj, bool):
+        return
+    if isinstance(obj, (int, float)):
+        if obj == obj and obj not in (float("inf"), float("-inf")):  # 排除 NaN/Inf
+            yield float(obj)
+        return
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            yield from _iter_numbers(item)
+
+
+def pixel_luma_baseline(stats: dict[str, Any], camera_key: str | None) -> float | None:
+    """从 stats.json 取某相机像素均值作亮度基线（0–255 量纲）；不可用返回 ``None``。
+
+    LeRobot 图像统计的 ``mean`` 多以 [0,1] 归一化、按通道嵌套存储（如 [3,1,1]）。
+    这里把各通道均值平均成单一亮度近似；若整体 ≤ 1.0 视为归一化值，换算回 0–255。
+    """
+    if not isinstance(stats, dict) or not camera_key:
+        return None
+    entry = stats.get(camera_key)
+    if not isinstance(entry, dict):
+        return None
+    nums = list(_iter_numbers(entry.get("mean")))
+    if not nums:
+        return None
+    value = sum(nums) / len(nums)
+    if value <= 1.0:
+        value *= 255.0
+    return value
+
+
 @dataclass
 class LeRobotGroup:
     """一组 LeRobot v3.0 数据集的组级元信息（逐组真实读取）。"""
@@ -152,6 +185,8 @@ class LeRobotGroup:
     labels: dict[int, dict[str, Any]] = field(default_factory=dict)
     # episode_index -> parquet 文件路径（实际交付的才有）
     parquet_by_episode: dict[int, Path] = field(default_factory=dict)
+    # 数据集级聚合统计（meta/stats.json，逐字段含像素均值等），供 brightness 取基线。
+    stats: dict[str, Any] = field(default_factory=dict)
 
     @property
     def delivered_episodes(self) -> int:
@@ -230,6 +265,15 @@ def load_group(root: Path) -> LeRobotGroup:
         except Exception:  # noqa: BLE001 - labels 缺失/损坏时降级为无标注
             group.labels = {}
 
+    stats_path = root / "meta" / "stats.json"
+    if stats_path.is_file():
+        try:
+            stats = _load_json(stats_path)
+            if isinstance(stats, dict):
+                group.stats = stats
+        except Exception:  # noqa: BLE001 - stats 缺失/损坏时降级为无基线
+            group.stats = {}
+
     data_dir = root / "data"
     if data_dir.is_dir():
         for parquet in data_dir.rglob("episode_*.parquet"):
@@ -289,6 +333,10 @@ def build_video_metadata(group: LeRobotGroup, video_path: Path) -> dict[str, Any
         "total_episodes": group.total_episodes,
         "delivered_episodes": group.delivered_episodes,
         "subtask_labels": target_objects,
+        # 子任务分段（含帧区间），供 endpoint_static 用「归位」收尾段交叉验证首尾停留。
+        "subtasks": label.get("subtasks") or [],
+        # stats.json 像素均值（0–255），供 brightness 作每数据源亮度基线。
+        "pixel_luma_baseline": pixel_luma_baseline(group.stats, camera_key),
     }
     return meta
 

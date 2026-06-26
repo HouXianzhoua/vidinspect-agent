@@ -9,6 +9,13 @@ from vidinspect_agent.checkers.base import BaseChecker
 from vidinspect_agent.models import CheckResult, Severity
 
 
+def _severity(value: str) -> Severity:
+    try:
+        return Severity(str(value).lower())
+    except ValueError:
+        return Severity.WARN
+
+
 def probe_video(path: Path) -> dict[str, Any]:
     cmd = [
         "ffprobe",
@@ -125,4 +132,73 @@ class MetadataChecker(BaseChecker):
                 )
             )
 
+        spec = self._check_declared_vs_measured(metadata)
+        if spec is not None:
+            results.append(spec)
+
         return results
+
+    def _check_declared_vs_measured(self, metadata: dict[str, Any]) -> CheckResult | None:
+        """「声明 vs 实测」交叉核对（§3）：info.json 声明视频规格 vs ffprobe 实测。
+
+        仅当 LeRobot 摄入层注入了 ``declared_video`` 时生效（纯视频无声明 → 返回 ``None``，
+        不产生该项）。比较 codec / 分辨率 / fps / pix_fmt / has_audio，任一不一致默认 WARN
+        （声明与实际不符通常意味着导出 / 转码环节有偏差，值得人工复核）。
+        """
+        cfg = self.config.get("metadata", {})
+        if not cfg.get("spec_match", True):
+            return None
+        lr = metadata.get("lerobot")
+        declared = lr.get("declared_video") if isinstance(lr, dict) else None
+        if not isinstance(declared, dict) or not any(
+            declared.get(k) is not None for k in ("codec", "width", "height", "fps", "pix_fmt")
+        ):
+            return None
+
+        fps_tol = float(cfg.get("fps_tol", 1.0))
+        fail_severity = _severity(cfg.get("spec_match_severity", "warn"))
+
+        mismatches: list[str] = []
+        checked: dict[str, Any] = {}
+
+        def _cmp(field: str, declared_val: Any, measured_val: Any, *, num_tol: float | None = None):
+            if declared_val is None:
+                return
+            checked[field] = {"declared": declared_val, "measured": measured_val}
+            if measured_val is None:
+                mismatches.append(f"{field}: 声明 {declared_val} / 实测 缺失")
+                return
+            if num_tol is not None:
+                try:
+                    if abs(float(declared_val) - float(measured_val)) > num_tol:
+                        mismatches.append(
+                            f"{field}: 声明 {declared_val} / 实测 {round(float(measured_val), 3)}"
+                        )
+                    return
+                except (TypeError, ValueError):
+                    pass
+            if str(declared_val).strip().lower() != str(measured_val).strip().lower():
+                mismatches.append(f"{field}: 声明 {declared_val} / 实测 {measured_val}")
+
+        _cmp("codec", declared.get("codec"), metadata.get("codec"))
+        _cmp("width", declared.get("width"), metadata.get("width"), num_tol=0)
+        _cmp("height", declared.get("height"), metadata.get("height"), num_tol=0)
+        _cmp("fps", declared.get("fps"), metadata.get("fps"), num_tol=fps_tol)
+        _cmp("pix_fmt", declared.get("pix_fmt"), metadata.get("pix_fmt"))
+        if declared.get("has_audio") is not None:
+            _cmp("has_audio", bool(declared.get("has_audio")), bool(metadata.get("has_audio")))
+
+        details = {"declared_vs_measured": checked, "n_mismatch": len(mismatches)}
+        if mismatches:
+            return CheckResult(
+                name="spec_match",
+                severity=fail_severity,
+                message="声明规格与实测不一致: " + "；".join(mismatches),
+                details=details,
+            )
+        return CheckResult(
+            name="spec_match",
+            severity=Severity.PASS,
+            message="声明规格与实测一致",
+            details=details,
+        )
