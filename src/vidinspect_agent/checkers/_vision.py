@@ -60,6 +60,16 @@ class VisionBackend(ABC):
         """
         raise NotImplementedError(f"{self.name} 不支持 classify_colormatch_frames")
 
+    def classify_occlusion_frames(
+        self, frames: list[Frame], prompt: str
+    ) -> dict[int, dict[str, Any]]:
+        """逐帧判定「夹爪 / 机械臂是否遮挡被操作物体」：
+
+        返回 ``{frame_index: {occluded, object_label, confidence}}``。供 occlusion
+        （首帧夹爪遮挡操作物品，规范15）检测器复用。默认不支持，由子类实现。
+        """
+        raise NotImplementedError(f"{self.name} 不支持 classify_occlusion_frames")
+
     def detect_video_intervals(self, video_path: str, prompt: str) -> list[Interval]:
         """video 模式：返回夹爪出镜区间。默认不支持。"""
         raise VideoModeUnsupported(f"{self.name} 不支持 video 模式")
@@ -195,6 +205,49 @@ def _parse_colormatch(data: dict[str, Any]) -> dict[int, dict[str, Any]]:
     return out
 
 
+def _occlusion_frame_schema() -> dict[str, Any]:
+    """逐帧「夹爪 / 机械臂是否遮挡被操作物体」判定 schema（规范15）。"""
+    return {
+        "type": "object",
+        "properties": {
+            "frames": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "gripper_occludes_object": {"type": "boolean"},
+                        "object_label": {"type": "string"},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["index", "gripper_occludes_object"],
+                },
+            },
+            "notes": {"type": "string"},
+        },
+        "required": ["frames"],
+    }
+
+
+def _parse_occlusion(data: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    """返回 {frame_index: {occluded, object_label, confidence}}。
+
+    仅收录模型显式返回的帧；未返回的帧由上层按「该帧无可辨识的被操作物体」跳过。
+    """
+    out: dict[int, dict[str, Any]] = {}
+    for fv in data.get("frames", []):
+        try:
+            idx = int(fv["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out[idx] = {
+            "occluded": bool(fv.get("gripper_occludes_object", False)),
+            "object_label": str(fv.get("object_label", "") or "").strip(),
+            "confidence": float(fv.get("confidence", 1.0) or 1.0),
+        }
+    return out
+
+
 def _interval_schema() -> dict[str, Any]:
     return {
         "type": "object",
@@ -266,6 +319,12 @@ class GeminiBackend(VisionBackend):
     ) -> dict[int, dict[str, Any]]:
         data = self._gen_json(self._frame_contents(frames, prompt), _colormatch_frame_schema())
         return _parse_colormatch(data)
+
+    def classify_occlusion_frames(
+        self, frames: list[Frame], prompt: str
+    ) -> dict[int, dict[str, Any]]:
+        data = self._gen_json(self._frame_contents(frames, prompt), _occlusion_frame_schema())
+        return _parse_occlusion(data)
 
     def detect_video_intervals(self, video_path: str, prompt: str) -> list[Interval]:
         timeout = float(self.cfg.get("timeout", 120.0))
@@ -346,6 +405,14 @@ class OpenAIBackend(VisionBackend):
             self._frame_content(frames, prompt), _colormatch_frame_schema(), "colormatch_frames"
         )
         return _parse_colormatch(data)
+
+    def classify_occlusion_frames(
+        self, frames: list[Frame], prompt: str
+    ) -> dict[int, dict[str, Any]]:
+        data = self._gen_json(
+            self._frame_content(frames, prompt), _occlusion_frame_schema(), "occlusion_frames"
+        )
+        return _parse_occlusion(data)
 
     # OpenAI 走 image 模式；video 模式沿用基类抛 VideoModeUnsupported。
 

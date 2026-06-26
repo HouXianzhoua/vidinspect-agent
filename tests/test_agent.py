@@ -5,6 +5,7 @@ from vidinspect_agent.checkers import _lerobot
 from vidinspect_agent.checkers.brightness import evaluate_brightness
 from vidinspect_agent.checkers.colormatch import _task_hint, evaluate_colormatch
 from vidinspect_agent.checkers.object_slip import _pick_closed, detect_slip
+from vidinspect_agent.checkers.occlusion import evaluate_occlusion
 from vidinspect_agent.checkers.regrasp import detect_regrasp
 from vidinspect_agent.models import CheckResult, Severity, VideoReport
 
@@ -379,6 +380,60 @@ def test_colormatch_low_confidence_frames_skipped():
 def test_colormatch_no_judged_frames_safe():
     # 全部帧无可辨识物体 → 无有效判定，hit_ratio=0，不命中（上层据 n_judged 报 WARN）。
     out = _cm([None, None, None])
+    assert out["n_judged"] == 0
+    assert out["detected"] is False
+
+
+def _occ(verdicts, thr=0.5, min_conf=0.0):
+    return evaluate_occlusion(verdicts, hit_ratio_thr=thr, min_confidence=min_conf)
+
+
+def test_occlusion_majority_occluded_detected():
+    # 首段多数可判定帧都被夹爪遮挡，占比 ≥ 阈值 → 命中。
+    verdicts = [
+        {"occluded": True, "confidence": 0.9},
+        {"occluded": True, "confidence": 0.8},
+        {"occluded": False, "confidence": 0.9},
+    ]
+    out = _occ(verdicts)
+    assert out["detected"] is True
+    assert out["n_occluded"] == 2 and out["n_judged"] == 3
+
+
+def test_occlusion_clear_object_not_flagged():
+    # 首段物体清晰可见 → 占比低于阈值 → 不命中。
+    verdicts = [
+        {"occluded": False, "confidence": 0.9},
+        {"occluded": False, "confidence": 0.9},
+        {"occluded": True, "confidence": 0.6},
+    ]
+    out = _occ(verdicts)
+    assert out["detected"] is False
+    assert out["score"] > 0.5
+
+
+def test_occlusion_unreturned_frames_not_counted():
+    # 模型未返回的帧(None)不计入分母，只在可判定帧里算占比。
+    verdicts = [None, {"occluded": True, "confidence": 0.9}]
+    out = _occ(verdicts)
+    assert out["n_judged"] == 1 and out["hit_ratio"] == 1.0
+    assert out["detected"] is True
+
+
+def test_occlusion_low_confidence_frames_skipped():
+    # 启用 min_confidence 后，低置信度帧被跳过，不计入。
+    verdicts = [
+        {"occluded": True, "confidence": 0.2},
+        {"occluded": False, "confidence": 0.9},
+    ]
+    out = _occ(verdicts, min_conf=0.5)
+    assert out["n_judged"] == 1 and out["n_occluded"] == 0
+    assert out["detected"] is False
+
+
+def test_occlusion_no_judged_frames_safe():
+    # 首段全部帧无可辨识物体 → 无有效判定，不命中（上层据 n_judged 报 WARN）。
+    out = _occ([None, None])
     assert out["n_judged"] == 0
     assert out["detected"] is False
 

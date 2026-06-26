@@ -62,8 +62,8 @@ def check(self, path: Path, metadata: dict[str, Any]) -> list[CheckResult]:
 ### 1.4 装配开关
 
 `config["checks"]` 逐项控制是否启用。装配顺序：
-`integrity → metadata → visual → static → dup_frame → jump → endpoint_static → freeze → noise → brightness → gripper_offscreen → regrasp → object_slip → colormatch`。
-除 `gripper_offscreen`（规范12）/ `regrasp`（规范1）/ `object_slip`（规范21）/ `colormatch`（规范19）四项付费多模态远程调用**默认关闭**外，其余默认全开。
+`integrity → metadata → visual → static → dup_frame → jump → endpoint_static → freeze → noise → brightness → gripper_offscreen → regrasp → object_slip → colormatch → occlusion`。
+除 `gripper_offscreen`（规范12）/ `regrasp`（规范1）/ `object_slip`（规范21）/ `colormatch`（规范19）/ `occlusion`（规范15）五项付费多模态远程调用**默认关闭**外，其余默认全开。
 
 ### 1.5 优雅降级原则
 
@@ -757,6 +757,58 @@ metadata 抽取并注入两类提示，帮模型锁定目标，**有就用、缺
 > **启用方式**：`pip install -e ".[gemini]"`（或 `".[openai]"`）→ 设对应 API key →
 > 把 `config` 的 `checks.colormatch` 改为 `true`（默认 false，因属付费远程调用）。
 
+### 3ter.5 OcclusionChecker（首帧夹爪遮挡操作物品，规范序号 15）
+
+- **源文件**：`checkers/occlusion.py`、后端 `checkers/_vision.py`
+- **目标**：检出**视频首帧 / 开局**存在夹爪（机械臂末端执行器 / 连杆）遮挡**被操作物体**，
+  导致开始时看不清目标物体的位置 / 大小。理想采集应让操作物体在开局清晰可见、不被挡住。
+- **为何走多模态**：「夹爪是否挡住被操作物体」本质是**语义识别**——要先定位「哪个才是被操作物」，
+  再判断它是否被夹爪 / 机械臂遮挡。纯像素帧差 / 光流绕不开这一步，故整体交给多模态模型一步判定。
+- **与 colormatch 的关系（同为静态属性、更轻）**：本项同样是**静态属性**（看视频开局即可），
+  不依赖动作过程、不需要时序状态机，复用 colormatch「逐帧独立判定 + 代码侧占比聚合」的同一套路。
+  区别仅在于**只抽视频开头一小段**（忠实「首帧」语义）而非全片均匀抽帧。
+
+#### 流程（只抽首段 + 逐帧遮挡 + 代码侧占比聚合）
+
+```
+1. 本地抽帧（仅首段）：sample_frames_jpeg(duration_sec=head_sec) 用 ffmpeg -t 只解码视频开头
+   head_sec（默认 1.0s）这一段，按 sample_fps（默认 2）抽帧为 JPEG（缩到 frame_max_h=360）；
+   首段很短，max_frames 默认仅 8。只抽首段既忠实「首帧」语义，又省 token、且避免抽到中段
+   正常抓取时夹爪遮挡物体造成的误报。
+2. 单次请求：模型逐帧回 {index, gripper_occludes_object, object_label, confidence}
+   （_vision._occlusion_frame_schema）；看不清且非被夹爪挡住的帧可省略不返回，
+   因被夹爪完全挡住而看不到则应回 gripper_occludes_object=true。
+   提示词除 robot_hint 外，还会注入 task_hint（复用 colormatch 的钩子）帮模型定位被操作物。
+3. 代码侧聚合（evaluate_occlusion，纯函数可单测）：
+   - 只在「模型返回了判定」的帧里统计（未返回 = 无可辨识物体 → 不计入分母）；
+   - min_confidence>0 时，低置信度帧也跳过；
+   - 「被遮挡」(occluded=True) 帧占比 hit_ratio = n_occluded / n_judged；
+   - 有效判定帧数 < min_judged_frames（默认 1）→ 报 WARN「无法评估」；
+   - 否则 hit_ratio >= hit_ratio（默认 0.5）→ 命中（默认 WARN）。
+   只抽了首段，故「多数首段帧被遮挡」即对应规范「首帧存在遮挡」。score = 1 - hit_ratio（越高越好）。
+```
+
+#### 关键阈值
+
+| 参数 | 默认 | 含义 |
+| --- | --- | --- |
+| `head_sec` | 1.0 | 只抽取视频开头这一段时长（秒）判定（忠实「首帧」语义） |
+| `sample_fps` | 2.0 | 首段抽帧采样率（head_sec×sample_fps 约为首段帧数） |
+| `max_frames` | 8 | 首段抽帧上限（首段很短，少量帧即可） |
+| `hit_ratio` | 0.5 | 可辨识物体的首段帧里「被遮挡」占比 ≥ 此值即命中 |
+| `min_judged_frames` | 1 | 有效判定帧数下限，低于此报 WARN（无法评估） |
+| `min_confidence` | 0.0 | 低于此的帧判定跳过（0=不启用） |
+
+#### 已知局限
+
+- 「是否被遮挡」在夹爪贴近但未挡住物体时带边界主观性，模型判定会有波动；故默认仅报 **WARN**
+  作人工复核提示，并以「占比 ≥ 阈值」聚合压单帧噪声。
+- 多目标 / 桌面拥挤 / 物体本身极小时「哪个是被操作物」可能识别不稳，体现为 `n_judged` 偏低 → 报 WARN。
+- **降级**：缺 API key / SDK / 抽帧失败 / 接口异常 / 无有效判定帧 → WARN，不阻塞流水线。
+
+> **启用方式**：`pip install -e ".[gemini]"`（或 `".[openai]"`）→ 设对应 API key →
+> 把 `config` 的 `checks.occlusion` 改为 `true`（默认 false，因属付费远程调用）。
+
 ---
 
 ## 4. 检测器速查表
@@ -778,6 +830,7 @@ metadata 抽取并注入两类提示，帮模型锁定目标，**有就用、缺
 | regrasp | WARN（默认关闭） | 去抖后逐臂持有段数（≥2 即二次抓取） | pyarrow（parquet 优先，零付费）/ ffmpeg + google-genai 或 openai + 网络（回退） | parquet 不可用 → 回退模型；缺 key/SDK、抽帧/接口异常 → WARN |
 | object_slip | WARN（默认关闭） | 持有结束时夹爪仍闭合却脱手（滑落） | pyarrow（夹爪信号优先）+ ffmpeg + google-genai 或 openai + 网络 | parquet 不可用 → 逐臂回退模型夹爪；缺 key/SDK、抽帧/接口异常 → WARN |
 | colormatch | WARN（默认关闭） | 可辨识帧中"操作物与桌面同色难分辨"占比 ≥ 阈值 | ffmpeg + google-genai 或 openai + 网络 | 缺 key/SDK、抽帧/接口异常、无有效判定帧 → WARN |
+| occlusion | WARN（默认关闭） | 首段可辨识帧中"夹爪遮挡操作物体"占比 ≥ 阈值 | ffmpeg + google-genai 或 openai + 网络 | 缺 key/SDK、抽帧/接口异常、无有效判定帧 → WARN |
 
 ---
 
