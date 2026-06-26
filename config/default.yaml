@@ -24,6 +24,7 @@ checks:
   jump: true
   endpoint_static: true   # 规范3：开始/结束归位停留时间长
   freeze: true            # 规范5：画面卡死（长时间卡帧）
+  tail_action: true       # 规范24：标注末动作结束帧之后仍有实际动作帧
   noise: true             # 规范11：严重噪点
   brightness: true        # 规范20子项：画面过暗/欠曝
   gripper_offscreen: false  # 规范12：夹爪出境（Gemini 付费远程调用，默认关闭，需设 GEMINI_API_KEY 并开启）
@@ -122,6 +123,17 @@ freeze:
   #（规范18）。有 LeRobot 关节时据此区分「真冻结」与「画面不一致」，记入 details 并细化命中文案。
   joint_cross_validate: true
   joint_move_speed: 0.005  # rad/帧：关节速度高于此视为「在动」
+
+# 末尾多余动作 / 视频帧数量问题检测（质检规范序号 24）
+# 规范：允许总帧数 > 标注末动作结束帧，但不允许该结束帧之后还有实际动作帧。
+# 判据用 LeRobot 标注（子任务 end_frame 最大值）+ puppet parquet 关节速度地面真值：
+# 末动作结束帧之后那段关节出现连续 >= min_action_sec 的运动即命中。
+# 依赖 LeRobot 组的 labels.json 与同 episode parquet（需 pyarrow: pip install -e ".[lerobot]"）；
+# 非 LeRobot 组 / 缺标注 / 缺关节信号 → WARN（无法评估），不阻塞流水线。
+tail_action:
+  severity: warn          # 命中时的严重级别：warn / fail
+  move_speed: 0.01        # rad/帧：关节速度高于此视为「在动」（实际动作，略高于静止抖动）
+  min_action_sec: 0.3     # 末尾连续运动达到此秒数才算「多余动作」（去抖，过滤零星传感跳变）
 
 # 注：质检规范序号 6（画面掉帧 / 多段短时卡帧 / 慢放）已由 dup_frame 覆盖
 #（规则 A periodic_stutter + 规则 B 时间变慢），无需单独检测器。
